@@ -1,2 +1,3 @@
-# npi
-Node Programming Interface
+# Node Programming Interface
+
+**prototype software! not yet working code**
