@@ -3,10 +3,9 @@
   Process: API generation
 */
 
-Object.defineProperty(typeof global === "object" ? global : window, "PI", {
-    value:        3.141593,
-    enumerable:   true,
-    writable:     false,
-    configurable: false
-})
-PI > 3.0;
+importScripts('speakGenerator.js');
+
+onmessage = function(event) {
+  postMessage(generateSpeech(event.data.text, event.data.args));
+};
+
