@@ -3,12 +3,13 @@
   Process: API generation
 */
 
-//-----------------------------------------------------------------------------
-function checkSequence(arr, message) {
-    arr.forEach(function(e, i) {
-        if (e !== (i+1)) {
-            $ERROR((message ? message : "Steps in unexpected sequence:") +
-                   " '" + arr.join(',') + "'");
-        }
-    });
-}
+/*---
+description: Async test
+negative: RangeError
+expected:
+  pass: true
+---*/
+
+setTimeout(function() {
+    $DONE(new RangeError());
+}, 1000);

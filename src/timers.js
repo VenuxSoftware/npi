@@ -3,82 +3,115 @@
   Process: API generation
 */
 
-// Copyright 2009 the Sputnik authors.  All rights reserved.
-// This code is governed by the BSD license found in the LICENSE file.
 
-function Test262Error(message) {
-  this.message = message;
-}
-
-Test262Error.prototype.toString = function () {
-  return "Test262 Error: " + this.message;
-};
-
-function testFailed(message) {
-  throw new Test262Error(message);
-}
-
-function testPrint(message) {
-
-}
-
-/**
- * It is not yet clear that runTestCase should pass the global object
- * as the 'this' binding in the call to testcase.
- */
-var runTestCase = (function(global) {
-  return function(testcase) {
-    if (!testcase.call(global)) {
-      testFailed('test function returned falsy');
-    }
-  };
-})(this);
-
-function assertTruthy(value) {
-  if (!value) {
-    testFailed('test return falsy');
-  }
-}
-
-
-/**
- * falsy means we expect no error.
- * truthy means we expect some error.
- * A non-empty string means we expect an error whose .name is that string.
- */
-var expectedErrorName = false;
-
-/**
- * What was thrown, or the string 'Falsy' if something falsy was thrown.
- * null if test completed normally.
- */
-var actualError = null;
-
-function testStarted(expectedErrName) {
-  expectedErrorName = expectedErrName;
-}
-
-function testFinished() {
-  var actualErrorName = actualError && (actualError.name ||
-                                        'SomethingThrown');
-  if (actualErrorName) {
-    if (expectedErrorName) {
-      if (typeof expectedErrorName === 'string') {
-        if (expectedErrorName === actualErrorName) {
-          return;
+function isConfigurable(obj, name) {
+    try {
+        delete obj[name];
+    } catch (e) {
+        if (!(e instanceof TypeError)) {
+            $ERROR("Expected TypeError, got " + e);
         }
-        testFailed('Threw ' + actualErrorName +
-                   ' instead of ' + expectedErrorName);
-      }
-      return;
     }
-    throw actualError;
-  }
-  if (expectedErrorName) {
-    if (typeof expectedErrorName === 'string') {
-      testFailed('Completed instead of throwing ' +
-                 expectedErrorName);
-    }
-    testFailed('Completed instead of throwing');
-  }
+    return !Object.prototype.hasOwnProperty.call(obj, name);
 }
+
+function isEnumerable(obj, name) {
+    return Object.prototype.hasOwnProperty.call(obj, name) &&
+        Object.prototype.propertyIsEnumerable.call(obj, name);
+}
+
+function isEqualTo(obj, name, expectedValue) {
+    var actualValue = obj[name];
+
+    return assert._isSameValue(actualValue, expectedValue);
+}
+
+function isWritable(obj, name, verifyProp, value) {
+    var newValue = value || "unlikelyValue";
+    var hadValue = Object.prototype.hasOwnProperty.call(obj, name);
+    var oldValue = obj[name];
+    var writeSucceeded;
+
+    try {
+        obj[name] = newValue;
+    } catch (e) {
+        if (!(e instanceof TypeError)) {
+            $ERROR("Expected TypeError, got " + e);
+        }
+    }
+
+    writeSucceeded = isEqualTo(obj, verifyProp || name, newValue);
+
+    // Revert the change only if it was successful (in other cases, reverting
+    // is unnecessary and may trigger exceptions for certain property
+    // configurations)
+    if (writeSucceeded) {
+      if (hadValue) {
+        obj[name] = oldValue;
+      } else {
+        delete obj[name];
+      }
+    }
+
+    return writeSucceeded;
+}
+
+function verifyEqualTo(obj, name, value) {
+    if (!isEqualTo(obj, name, value)) {
+        $ERROR("Expected obj[" + String(name) + "] to equal " + value +
+                   ", actually " + obj[name]);
+    }
+}
+
+function verifyWritable(obj, name, verifyProp, value) {
+    if (!verifyProp) {
+        assert(Object.getOwnPropertyDescriptor(obj, name).writable,
+               "Expected obj[" + String(name) + "] to have writable:true.");
+    }
+    if (!isWritable(obj, name, verifyProp, value)) {
+        $ERROR("Expected obj[" + String(name) + "] to be writable, but was not.");
+    }
+}
+
+function verifyNotWritable(obj, name, verifyProp, value) {
+    if (!verifyProp) {
+        assert(!Object.getOwnPropertyDescriptor(obj, name).writable,
+               "Expected obj[" + String(name) + "] to have writable:false.");
+    }
+    if (isWritable(obj, name, verifyProp)) {
+        $ERROR("Expected obj[" + String(name) + "] NOT to be writable, but was.");
+    }
+}
+
+function verifyEnumerable(obj, name) {
+    assert(Object.getOwnPropertyDescriptor(obj, name).enumerable,
+           "Expected obj[" + String(name) + "] to have enumerable:true.");
+    if (!isEnumerable(obj, name)) {
+        $ERROR("Expected obj[" + String(name) + "] to be enumerable, but was not.");
+    }
+}
+
+function verifyNotEnumerable(obj, name) {
+    assert(!Object.getOwnPropertyDescriptor(obj, name).enumerable,
+           "Expected obj[" + String(name) + "] to have enumerable:false.");
+    if (isEnumerable(obj, name)) {
+        $ERROR("Expected obj[" + String(name) + "] NOT to be enumerable, but was.");
+    }
+}
+
+function verifyConfigurable(obj, name) {
+    assert(Object.getOwnPropertyDescriptor(obj, name).configurable,
+           "Expected obj[" + String(name) + "] to have configurable:true.");
+    if (!isConfigurable(obj, name)) {
+        $ERROR("Expected obj[" + String(name) + "] to be configurable, but was not.");
+    }
+}
+
+function verifyNotConfigurable(obj, name) {
+    assert(!Object.getOwnPropertyDescriptor(obj, name).configurable,
+           "Expected obj[" + String(name) + "] to have configurable:false.");
+    if (isConfigurable(obj, name)) {
+        $ERROR("Expected obj[" + String(name) + "] NOT to be configurable, but was.");
+    }
+}
+

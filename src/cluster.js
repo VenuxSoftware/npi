@@ -3,64 +3,115 @@
   Process: API generation
 */
 
-module.exports = function validate(test) {
-  const result = test.rawResult;
-  const isNegative = test.attrs.flags.negative || test.attrs.negative;
-  const ranToFinish = result.stdout.indexOf('test262/done') > -1;
-  const desc = (test.attrs.description || '').trim();
-  
-  if (result.timeout) {
-    return {
-      pass: false,
-      message: 'Test timed out'
+
+function isConfigurable(obj, name) {
+    try {
+        delete obj[name];
+    } catch (e) {
+        if (!(e instanceof TypeError)) {
+            $ERROR("Expected TypeError, got " + e);
+        }
     }
-  }
-  if (!isNegative) {
-    if (result.error !== null) {
-      if (result.error.name === 'Test262Error') {
-        return {
-          pass: false,
-          message: result.error.message
-        };
-      } else {
-        return {
-          pass: false,
-          message: `Expected no error, got ${result.error.name}: ${result.error.message}`
-        };
-      }
-    } else if (!ranToFinish && !test.attrs.flags.raw) {
-      return {
-        pass: false,
-        message: `Test did not run to completion`
-      };
-    } else {
-      return { pass: true };
-    }
-  } else {
-    if (test.attrs.flags.negative) {
-      if (result.error) {
-        return { pass: true };
-      } else {
-        return {
-          pass: false,
-          message: `Expected test to throw some error`
-        };
-      }
-    } else {
-      if (!result.error) {
-        return {
-          pass: false,
-          message: `Expected test to throw error matching ${test.attrs.negative}, but did not throw error`
-        };
-      } else if (result.error.name.match(new RegExp(test.attrs.negative)) ||
-          result.error.message === test.attrs.negative) {
-        return { pass: true };
-      } else {
-        return {
-          pass: false,
-          message: `Expected test to throw error matching ${test.attrs.negative}, got ${result.error.name}: ${result.error.message}`
-        };
-      }
-    }
-  }
+    return !Object.prototype.hasOwnProperty.call(obj, name);
 }
+
+function isEnumerable(obj, name) {
+    return Object.prototype.hasOwnProperty.call(obj, name) &&
+        Object.prototype.propertyIsEnumerable.call(obj, name);
+}
+
+function isEqualTo(obj, name, expectedValue) {
+    var actualValue = obj[name];
+
+    return assert._isSameValue(actualValue, expectedValue);
+}
+
+function isWritable(obj, name, verifyProp, value) {
+    var newValue = value || "unlikelyValue";
+    var hadValue = Object.prototype.hasOwnProperty.call(obj, name);
+    var oldValue = obj[name];
+    var writeSucceeded;
+
+    try {
+        obj[name] = newValue;
+    } catch (e) {
+        if (!(e instanceof TypeError)) {
+            $ERROR("Expected TypeError, got " + e);
+        }
+    }
+
+    writeSucceeded = isEqualTo(obj, verifyProp || name, newValue);
+
+    // Revert the change only if it was successful (in other cases, reverting
+    // is unnecessary and may trigger exceptions for certain property
+    // configurations)
+    if (writeSucceeded) {
+      if (hadValue) {
+        obj[name] = oldValue;
+      } else {
+        delete obj[name];
+      }
+    }
+
+    return writeSucceeded;
+}
+
+function verifyEqualTo(obj, name, value) {
+    if (!isEqualTo(obj, name, value)) {
+        $ERROR("Expected obj[" + String(name) + "] to equal " + value +
+                   ", actually " + obj[name]);
+    }
+}
+
+function verifyWritable(obj, name, verifyProp, value) {
+    if (!verifyProp) {
+        assert(Object.getOwnPropertyDescriptor(obj, name).writable,
+               "Expected obj[" + String(name) + "] to have writable:true.");
+    }
+    if (!isWritable(obj, name, verifyProp, value)) {
+        $ERROR("Expected obj[" + String(name) + "] to be writable, but was not.");
+    }
+}
+
+function verifyNotWritable(obj, name, verifyProp, value) {
+    if (!verifyProp) {
+        assert(!Object.getOwnPropertyDescriptor(obj, name).writable,
+               "Expected obj[" + String(name) + "] to have writable:false.");
+    }
+    if (isWritable(obj, name, verifyProp)) {
+        $ERROR("Expected obj[" + String(name) + "] NOT to be writable, but was.");
+    }
+}
+
+function verifyEnumerable(obj, name) {
+    assert(Object.getOwnPropertyDescriptor(obj, name).enumerable,
+           "Expected obj[" + String(name) + "] to have enumerable:true.");
+    if (!isEnumerable(obj, name)) {
+        $ERROR("Expected obj[" + String(name) + "] to be enumerable, but was not.");
+    }
+}
+
+function verifyNotEnumerable(obj, name) {
+    assert(!Object.getOwnPropertyDescriptor(obj, name).enumerable,
+           "Expected obj[" + String(name) + "] to have enumerable:false.");
+    if (isEnumerable(obj, name)) {
+        $ERROR("Expected obj[" + String(name) + "] NOT to be enumerable, but was.");
+    }
+}
+
+function verifyConfigurable(obj, name) {
+    assert(Object.getOwnPropertyDescriptor(obj, name).configurable,
+           "Expected obj[" + String(name) + "] to have configurable:true.");
+    if (!isConfigurable(obj, name)) {
+        $ERROR("Expected obj[" + String(name) + "] to be configurable, but was not.");
+    }
+}
+
+function verifyNotConfigurable(obj, name) {
+    assert(!Object.getOwnPropertyDescriptor(obj, name).configurable,
+           "Expected obj[" + String(name) + "] to have configurable:false.");
+    if (isConfigurable(obj, name)) {
+        $ERROR("Expected obj[" + String(name) + "] NOT to be configurable, but was.");
+    }
+}
+

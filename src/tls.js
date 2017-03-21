@@ -3,35 +3,18 @@
   Process: API generation
 */
 
-'use strict';
-const glob = require('glob');
-const Rx = require('rx');
 
-function globber(paths) {
-  const files = new Rx.Subject();
-  files.fileEvents = [];
+//-----------------------------------------------------------------------------
+function compareArray(a, b) {
+  if (b.length !== a.length) {
+    return false;
+  }
 
-  let doneCount = 0;
-
-  paths.forEach(function (path) {
-    const fileEvents = new glob.Glob(path, {
-      nodir: true
-    });
-
-    fileEvents.on('match', function (file) {
-      files.onNext(file);
-    });
-
-    fileEvents.on('end', function () {
-      if (++doneCount === paths.length) {
-        files.onCompleted();
-      }
-    });
-
-    files.fileEvents.push(fileEvents);
-  });
-
-  return files;
+  for (var i = 0; i < a.length; i++) {
+    if (b[i] !== a[i]) {
+      return false;
+    }
+  }
+  return true;
 }
 
-module.exports = globber;

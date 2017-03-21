@@ -4,8 +4,11 @@
 */
 
 /*---
-description: Should report the expected error indicated by the "negative" frontmatter
-negative: ExpectedError
+description: Test that should timeout
 expected:
   pass: false
+  message: Test timed out
 ---*/
+while (true) {
+  // do nothing, should timeout
+}

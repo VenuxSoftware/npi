@@ -3,804 +3,1208 @@
   Process: API generation
 */
 
-// export
-if (module) module.exports = Neuron;
+// Copyright 2011-2012 Norbert Lindenberg. All rights reserved.
+// Copyright 2012-2013 Mozilla Corporation. All rights reserved.
+// This code is governed by the BSD license found in the LICENSE file.
 
-/******************************************************************************************
-                                         NEURON
-*******************************************************************************************/
+/**
+ * This file contains shared functions for the tests in the conformance test
+ * suite for the ECMAScript Internationalization API.
+ * @author Norbert Lindenberg
+ */
 
-function Neuron() {
-  this.ID = Neuron.uid();
-  this.label = null;
-  this.connections = {
-    inputs: {},
-    projected: {},
-    gated: {}
-  };
-  this.error = {
-    responsibility: 0,
-    projected: 0,
-    gated: 0
-  };
-  this.trace = {
-    elegibility: {},
-    extended: {},
-    influences: {}
-  };
-  this.state = 0;
-  this.old = 0;
-  this.activation = 0;
-  this.selfconnection = new Neuron.connection(this, this, 0); // weight = 0 -> not connected
-  this.squash = Neuron.squash.LOGISTIC;
-  this.neighboors = {};
-  this.bias = Math.random() * .2 - .1;
+
+/**
+ * @description Calls the provided function for every service constructor in
+ * the Intl object, until f returns a falsy value. It returns the result of the
+ * last call to f, mapped to a boolean.
+ * @param {Function} f the function to call for each service constructor in
+ *     the Intl object.
+ *     @param {Function} Constructor the constructor object to test with.
+ * @result {Boolean} whether the test succeeded.
+ */
+function testWithIntlConstructors(f) {
+    var constructors = ["Collator", "NumberFormat", "DateTimeFormat"];
+    return constructors.every(function (constructor) {
+        var Constructor = Intl[constructor];
+        var result;
+        try {
+            result = f(Constructor);
+        } catch (e) {
+            e.message += " (Testing with " + constructor + ".)";
+            throw e;
+        }
+        return result;
+    });
 }
 
-Neuron.prototype = {
 
-  // activate the neuron
-  activate: function(input) {
-    // activation from enviroment (for input neurons)
-    if (typeof input != 'undefined') {
-      this.activation = input;
-      this.derivative = 0;
-      this.bias = 0;
-      return this.activation;
+/**
+ * Returns the name of the given constructor object, which must be one of
+ * Intl.Collator, Intl.NumberFormat, or Intl.DateTimeFormat.
+ * @param {object} Constructor a constructor
+ * @return {string} the name of the constructor
+ */
+function getConstructorName(Constructor) {
+    switch (Constructor) {
+        case Intl.Collator:
+            return "Collator";
+        case Intl.NumberFormat:
+            return "NumberFormat";
+        case Intl.DateTimeFormat:
+            return "DateTimeFormat";
+        default:
+            $ERROR("test internal error: unknown Constructor");
+    }
+}
+
+
+/**
+ * Taints a named data property of the given object by installing
+ * a setter that throws an exception.
+ * @param {object} obj the object whose data property to taint
+ * @param {string} property the property to taint
+ */
+function taintDataProperty(obj, property) {
+    Object.defineProperty(obj, property, {
+        set: function(value) {
+            $ERROR("Client code can adversely affect behavior: setter for " + property + ".");
+        },
+        enumerable: false,
+        configurable: true
+    });
+}
+
+
+/**
+ * Taints a named method of the given object by replacing it with a function
+ * that throws an exception.
+ * @param {object} obj the object whose method to taint
+ * @param {string} property the name of the method to taint
+ */
+function taintMethod(obj, property) {
+    Object.defineProperty(obj, property, {
+        value: function() {
+            $ERROR("Client code can adversely affect behavior: method " + property + ".");
+        },
+        writable: true,
+        enumerable: false,
+        configurable: true
+    });
+}
+
+
+/**
+ * Taints the given properties (and similarly named properties) by installing
+ * setters on Object.prototype that throw exceptions.
+ * @param {Array} properties an array of property names to taint
+ */
+function taintProperties(properties) {
+    properties.forEach(function (property) {
+        var adaptedProperties = [property, "__" + property, "_" + property, property + "_", property + "__"];
+        adaptedProperties.forEach(function (property) {
+            taintDataProperty(Object.prototype, property);
+        });
+    });
+}
+
+
+/**
+ * Taints the Array object by creating a setter for the property "0" and
+ * replacing some key methods with functions that throw exceptions.
+ */
+function taintArray() {
+    taintDataProperty(Array.prototype, "0");
+    taintMethod(Array.prototype, "indexOf");
+    taintMethod(Array.prototype, "join");
+    taintMethod(Array.prototype, "push");
+    taintMethod(Array.prototype, "slice");
+    taintMethod(Array.prototype, "sort");
+}
+
+
+// auxiliary data for getLocaleSupportInfo
+var languages = ["zh", "es", "en", "hi", "ur", "ar", "ja", "pa"];
+var scripts = ["Latn", "Hans", "Deva", "Arab", "Jpan", "Hant"];
+var countries = ["CN", "IN", "US", "PK", "JP", "TW", "HK", "SG"];
+var localeSupportInfo = {};
+
+
+/**
+ * Gets locale support info for the given constructor object, which must be one
+ * of Intl.Collator, Intl.NumberFormat, Intl.DateTimeFormat.
+ * @param {object} Constructor the constructor for which to get locale support info
+ * @return {object} locale support info with the following properties:
+ *     supported: array of fully supported language tags
+ *     byFallback: array of language tags that are supported through fallbacks
+ *     unsupported: array of unsupported language tags
+ */
+function getLocaleSupportInfo(Constructor) {
+    var constructorName = getConstructorName(Constructor);
+    if (localeSupportInfo[constructorName] !== undefined) {
+        return localeSupportInfo[constructorName];
     }
 
-    // old state
-    this.old = this.state;
-
-    // eq. 15
-    this.state = this.selfconnection.gain * this.selfconnection.weight *
-      this.state + this.bias;
-
-    for (var i in this.connections.inputs) {
-      var input = this.connections.inputs[i];
-      this.state += input.from.activation * input.weight * input.gain;
-    }
-
-    // eq. 16
-    this.activation = this.squash(this.state);
-
-    // f'(s)
-    this.derivative = this.squash(this.state, true);
-
-    // update traces
-    var influences = [];
-    for (var id in this.trace.extended) {
-      // extended elegibility trace
-      var xtrace = this.trace.extended[id];
-      var neuron = this.neighboors[id];
-
-      // if gated neuron's selfconnection is gated by this unit, the influence keeps track of the neuron's old state
-      var influence = neuron.selfconnection.gater == this ? neuron.old : 0;
-
-      // index runs over all the incoming connections to the gated neuron that are gated by this unit
-      for (var incoming in this.trace.influences[neuron.ID]) { // captures the effect that has an input connection to this unit, on a neuron that is gated by this unit
-        influence += this.trace.influences[neuron.ID][incoming].weight *
-          this.trace.influences[neuron.ID][incoming].from.activation;
-      }
-      influences[neuron.ID] = influence;
-    }
-
-    for (var i in this.connections.inputs) {
-      var input = this.connections.inputs[i];
-
-      // elegibility trace - Eq. 17
-      this.trace.elegibility[input.ID] = this.selfconnection.gain * this.selfconnection
-        .weight * this.trace.elegibility[input.ID] + input.gain * input.from
-        .activation;
-
-      for (var id in this.trace.extended) {
-        // extended elegibility trace
-        var xtrace = this.trace.extended[id];
-        var neuron = this.neighboors[id];
-        var influence = influences[neuron.ID];
-
-        // eq. 18
-        xtrace[input.ID] = neuron.selfconnection.gain * neuron.selfconnection
-          .weight * xtrace[input.ID] + this.derivative * this.trace.elegibility[
-            input.ID] * influence;
-      }
-    }
-
-    //  update gated connection's gains
-    for (var connection in this.connections.gated) {
-      this.connections.gated[connection].gain = this.activation;
-    }
-
-    return this.activation;
-  },
-
-  // back-propagate the error
-  propagate: function(rate, target) {
-    // error accumulator
-    var error = 0;
-
-    // whether or not this neuron is in the output layer
-    var isOutput = typeof target != 'undefined';
-
-    // output neurons get their error from the enviroment
-    if (isOutput)
-      this.error.responsibility = this.error.projected = target - this.activation; // Eq. 10
-
-    else // the rest of the neuron compute their error responsibilities by backpropagation
-    {
-      // error responsibilities from all the connections projected from this neuron
-      for (var id in this.connections.projected) {
-        var connection = this.connections.projected[id];
-        var neuron = connection.to;
-        // Eq. 21
-        error += neuron.error.responsibility * connection.gain * connection.weight;
-      }
-
-      // projected error responsibility
-      this.error.projected = this.derivative * error;
-
-      error = 0;
-      // error responsibilities from all the connections gated by this neuron
-      for (var id in this.trace.extended) {
-        var neuron = this.neighboors[id]; // gated neuron
-        var influence = neuron.selfconnection.gater == this ? neuron.old : 0; // if gated neuron's selfconnection is gated by this neuron
-
-        // index runs over all the connections to the gated neuron that are gated by this neuron
-        for (var input in this.trace.influences[id]) { // captures the effect that the input connection of this neuron have, on a neuron which its input/s is/are gated by this neuron
-          influence += this.trace.influences[id][input].weight * this.trace.influences[
-            neuron.ID][input].from.activation;
+    var allTags = [];
+    var i, j, k;
+    var language, script, country;
+    for (i = 0; i < languages.length; i++) {
+        language = languages[i];
+        allTags.push(language);
+        for (j = 0; j < scripts.length; j++) {
+            script = scripts[j];
+            allTags.push(language + "-" + script);
+            for (k = 0; k < countries.length; k++) {
+                country = countries[k];
+                allTags.push(language + "-" + script + "-" + country);
+            }
         }
-        // eq. 22
-        error += neuron.error.responsibility * influence;
-      }
+        for (k = 0; k < countries.length; k++) {
+            country = countries[k];
+            allTags.push(language + "-" + country);
+        }
+    }
+    
+    var supported = [];
+    var byFallback = [];
+    var unsupported = [];
+    for (i = 0; i < allTags.length; i++) {
+        var request = allTags[i];
+        var result = new Constructor([request], {localeMatcher: "lookup"}).resolvedOptions().locale;
+         if (request === result) {
+            supported.push(request);
+        } else if (request.indexOf(result) === 0) {
+            byFallback.push(request);
+        } else {
+            unsupported.push(request);
+        }
+    }
+    
+    localeSupportInfo[constructorName] = {
+        supported: supported,
+        byFallback: byFallback,
+        unsupported: unsupported
+    };
+    
+    return localeSupportInfo[constructorName];
+}
+        
 
-      // gated error responsibility
-      this.error.gated = this.derivative * error;
+/**
+ * @description Tests whether locale is a String value representing a
+ * structurally valid and canonicalized BCP 47 language tag, as defined in
+ * sections 6.2.2 and 6.2.3 of the ECMAScript Internationalization API
+ * Specification.
+ * @param {String} locale the string to be tested.
+ * @result {Boolean} whether the test succeeded.
+ */
+function isCanonicalizedStructurallyValidLanguageTag(locale) {
 
-      // error responsibility - Eq. 23
-      this.error.responsibility = this.error.projected + this.error.gated;
+    /**
+     * Regular expression defining BCP 47 language tags.
+     *
+     * Spec: RFC 5646 section 2.1.
+     */
+    var alpha = "[a-zA-Z]",
+        digit = "[0-9]",
+        alphanum = "(" + alpha + "|" + digit + ")",
+        regular = "(art-lojban|cel-gaulish|no-bok|no-nyn|zh-guoyu|zh-hakka|zh-min|zh-min-nan|zh-xiang)",
+        irregular = "(en-GB-oed|i-ami|i-bnn|i-default|i-enochian|i-hak|i-klingon|i-lux|i-mingo|i-navajo|i-pwn|i-tao|i-tay|i-tsu|sgn-BE-FR|sgn-BE-NL|sgn-CH-DE)",
+        grandfathered = "(" + irregular + "|" + regular + ")",
+        privateuse = "(x(-[a-z0-9]{1,8})+)",
+        singleton = "(" + digit + "|[A-WY-Za-wy-z])",
+        extension = "(" + singleton + "(-" + alphanum + "{2,8})+)",
+        variant = "(" + alphanum + "{5,8}|(" + digit + alphanum + "{3}))",
+        region = "(" + alpha + "{2}|" + digit + "{3})",
+        script = "(" + alpha + "{4})",
+        extlang = "(" + alpha + "{3}(-" + alpha + "{3}){0,2})",
+        language = "(" + alpha + "{2,3}(-" + extlang + ")?|" + alpha + "{4}|" + alpha + "{5,8})",
+        langtag = language + "(-" + script + ")?(-" + region + ")?(-" + variant + ")*(-" + extension + ")*(-" + privateuse + ")?",
+        languageTag = "^(" + langtag + "|" + privateuse + "|" + grandfathered + ")$",
+        languageTagRE = new RegExp(languageTag, "i");
+    var duplicateSingleton = "-" + singleton + "-(.*-)?\\1(?!" + alphanum + ")",
+        duplicateSingletonRE = new RegExp(duplicateSingleton, "i"),
+        duplicateVariant = "(" + alphanum + "{2,8}-)+" + variant + "-(" + alphanum + "{2,8}-)*\\3(?!" + alphanum + ")",
+        duplicateVariantRE = new RegExp(duplicateVariant, "i");
+
+
+    /**
+     * Verifies that the given string is a well-formed BCP 47 language tag
+     * with no duplicate variant or singleton subtags.
+     *
+     * Spec: ECMAScript Internationalization API Specification, draft, 6.2.2.
+     */
+    function isStructurallyValidLanguageTag(locale) {
+        if (!languageTagRE.test(locale)) {
+            return false;
+        }
+        locale = locale.split(/-x-/)[0];
+        return !duplicateSingletonRE.test(locale) && !duplicateVariantRE.test(locale);
     }
 
-    // learning rate
-    rate = rate || .1;
 
-    // adjust all the neuron's incoming connections
-    for (var id in this.connections.inputs) {
-      var input = this.connections.inputs[id];
+    /**
+     * Mappings from complete tags to preferred values.
+     *
+     * Spec: IANA Language Subtag Registry.
+     */
+    var __tagMappings = {
+        // property names must be in lower case; values in canonical form
 
-      // Eq. 24
-      var gradient = this.error.projected * this.trace.elegibility[input.ID];
-      for (var id in this.trace.extended) {
-        var neuron = this.neighboors[id];
-        gradient += neuron.error.responsibility * this.trace.extended[
-          neuron.ID][input.ID];
-      }
-      input.weight += rate * gradient; // adjust weights - aka learn
-    }
-
-    // adjust bias
-    this.bias += rate * this.error.responsibility;
-  },
-
-  project: function(neuron, weight) {
-    // self-connection
-    if (neuron == this) {
-      this.selfconnection.weight = 1;
-      return this.selfconnection;
-    }
-
-    // check if connection already exists
-    var connected = this.connected(neuron);
-    if (connected && connected.type == "projected") {
-      // update connection
-      if (typeof weight != 'undefined')
-        connected.connection.weight = weight;
-      // return existing connection
-      return connected.connection;
-    } else {
-      // create a new connection
-      var connection = new Neuron.connection(this, neuron, weight);
-    }
-
-    // reference all the connections and traces
-    this.connections.projected[connection.ID] = connection;
-    this.neighboors[neuron.ID] = neuron;
-    neuron.connections.inputs[connection.ID] = connection;
-    neuron.trace.elegibility[connection.ID] = 0;
-
-    for (var id in neuron.trace.extended) {
-      var trace = neuron.trace.extended[id];
-      trace[connection.ID] = 0;
-    }
-
-    return connection;
-  },
-
-  gate: function(connection) {
-    // add connection to gated list
-    this.connections.gated[connection.ID] = connection;
-
-    var neuron = connection.to;
-    if (!(neuron.ID in this.trace.extended)) {
-      // extended trace
-      this.neighboors[neuron.ID] = neuron;
-      var xtrace = this.trace.extended[neuron.ID] = {};
-      for (var id in this.connections.inputs) {
-        var input = this.connections.inputs[id];
-        xtrace[input.ID] = 0;
-      }
-    }
-
-    // keep track
-    if (neuron.ID in this.trace.influences)
-      this.trace.influences[neuron.ID].push(connection);
-    else
-      this.trace.influences[neuron.ID] = [connection];
-
-    // set gater
-    connection.gater = this;
-  },
-
-  // returns true or false whether the neuron is self-connected or not
-  selfconnected: function() {
-    return this.selfconnection.weight !== 0;
-  },
-
-  // returns true or false whether the neuron is connected to another neuron (parameter)
-  connected: function(neuron) {
-    var result = {
-      type: null,
-      connection: false
+        // grandfathered tags from IANA language subtag registry, file date 2011-08-25
+        "art-lojban": "jbo",
+        "cel-gaulish": "cel-gaulish",
+        "en-gb-oed": "en-GB-oed",
+        "i-ami": "ami",
+        "i-bnn": "bnn",
+        "i-default": "i-default",
+        "i-enochian": "i-enochian",
+        "i-hak": "hak",
+        "i-klingon": "tlh",
+        "i-lux": "lb",
+        "i-mingo": "i-mingo",
+        "i-navajo": "nv",
+        "i-pwn": "pwn",
+        "i-tao": "tao",
+        "i-tay": "tay",
+        "i-tsu": "tsu",
+        "no-bok": "nb",
+        "no-nyn": "nn",
+        "sgn-be-fr": "sfb",
+        "sgn-be-nl": "vgt",
+        "sgn-ch-de": "sgg",
+        "zh-guoyu": "cmn",
+        "zh-hakka": "hak",
+        "zh-min": "zh-min",
+        "zh-min-nan": "nan",
+        "zh-xiang": "hsn",
+        // deprecated redundant tags from IANA language subtag registry, file date 2011-08-25
+        "sgn-br": "bzs",
+        "sgn-co": "csn",
+        "sgn-de": "gsg",
+        "sgn-dk": "dsl",
+        "sgn-es": "ssp",
+        "sgn-fr": "fsl",
+        "sgn-gb": "bfi",
+        "sgn-gr": "gss",
+        "sgn-ie": "isg",
+        "sgn-it": "ise",
+        "sgn-jp": "jsl",
+        "sgn-mx": "mfs",
+        "sgn-ni": "ncs",
+        "sgn-nl": "dse",
+        "sgn-no": "nsl",
+        "sgn-pt": "psr",
+        "sgn-se": "swl",
+        "sgn-us": "ase",
+        "sgn-za": "sfs",
+        "zh-cmn": "cmn",
+        "zh-cmn-hans": "cmn-Hans",
+        "zh-cmn-hant": "cmn-Hant",
+        "zh-gan": "gan",
+        "zh-wuu": "wuu",
+        "zh-yue": "yue",
+        // deprecated variant with prefix from IANA language subtag registry, file date 2011-08-25
+        "ja-latn-hepburn-heploc": "ja-Latn-alalc97"
     };
 
-    if (this == neuron) {
-      if (this.selfconnected()) {
-        result.type = 'selfconnection';
-        result.connection = this.selfconnection;
-        return result;
-      } else
+
+    /**
+     * Mappings from non-extlang subtags to preferred values.
+     *
+     * Spec: IANA Language Subtag Registry.
+     */
+    var __subtagMappings = {
+        // property names and values must be in canonical case
+        // language subtags with Preferred-Value mappings from IANA language subtag registry, file date 2011-08-25
+        "in": "id",
+        "iw": "he",
+        "ji": "yi",
+        "jw": "jv",
+        "mo": "ro",
+        "ayx": "nun",
+        "cjr": "mom",
+        "cmk": "xch",
+        "drh": "khk",
+        "drw": "prs",
+        "gav": "dev",
+        "mst": "mry",
+        "myt": "mry",
+        "tie": "ras",
+        "tkk": "twm",
+        "tnf": "prs",
+        // region subtags with Preferred-Value mappings from IANA language subtag registry, file date 2011-08-25
+        "BU": "MM",
+        "DD": "DE",
+        "FX": "FR",
+        "TP": "TL",
+        "YD": "YE",
+        "ZR": "CD"
+    };
+
+
+    /**
+     * Mappings from extlang subtags to preferred values.
+     *
+     * Spec: IANA Language Subtag Registry.
+     */
+    var __extlangMappings = {
+        // extlang subtags with Preferred-Value mappings from IANA language subtag registry, file date 2011-08-25
+        // values are arrays with [0] the replacement value, [1] (if present) the prefix to be removed
+        "aao": ["aao", "ar"],
+        "abh": ["abh", "ar"],
+        "abv": ["abv", "ar"],
+        "acm": ["acm", "ar"],
+        "acq": ["acq", "ar"],
+        "acw": ["acw", "ar"],
+        "acx": ["acx", "ar"],
+        "acy": ["acy", "ar"],
+        "adf": ["adf", "ar"],
+        "ads": ["ads", "sgn"],
+        "aeb": ["aeb", "ar"],
+        "aec": ["aec", "ar"],
+        "aed": ["aed", "sgn"],
+        "aen": ["aen", "sgn"],
+        "afb": ["afb", "ar"],
+        "afg": ["afg", "sgn"],
+        "ajp": ["ajp", "ar"],
+        "apc": ["apc", "ar"],
+        "apd": ["apd", "ar"],
+        "arb": ["arb", "ar"],
+        "arq": ["arq", "ar"],
+        "ars": ["ars", "ar"],
+        "ary": ["ary", "ar"],
+        "arz": ["arz", "ar"],
+        "ase": ["ase", "sgn"],
+        "asf": ["asf", "sgn"],
+        "asp": ["asp", "sgn"],
+        "asq": ["asq", "sgn"],
+        "asw": ["asw", "sgn"],
+        "auz": ["auz", "ar"],
+        "avl": ["avl", "ar"],
+        "ayh": ["ayh", "ar"],
+        "ayl": ["ayl", "ar"],
+        "ayn": ["ayn", "ar"],
+        "ayp": ["ayp", "ar"],
+        "bbz": ["bbz", "ar"],
+        "bfi": ["bfi", "sgn"],
+        "bfk": ["bfk", "sgn"],
+        "bjn": ["bjn", "ms"],
+        "bog": ["bog", "sgn"],
+        "bqn": ["bqn", "sgn"],
+        "bqy": ["bqy", "sgn"],
+        "btj": ["btj", "ms"],
+        "bve": ["bve", "ms"],
+        "bvl": ["bvl", "sgn"],
+        "bvu": ["bvu", "ms"],
+        "bzs": ["bzs", "sgn"],
+        "cdo": ["cdo", "zh"],
+        "cds": ["cds", "sgn"],
+        "cjy": ["cjy", "zh"],
+        "cmn": ["cmn", "zh"],
+        "coa": ["coa", "ms"],
+        "cpx": ["cpx", "zh"],
+        "csc": ["csc", "sgn"],
+        "csd": ["csd", "sgn"],
+        "cse": ["cse", "sgn"],
+        "csf": ["csf", "sgn"],
+        "csg": ["csg", "sgn"],
+        "csl": ["csl", "sgn"],
+        "csn": ["csn", "sgn"],
+        "csq": ["csq", "sgn"],
+        "csr": ["csr", "sgn"],
+        "czh": ["czh", "zh"],
+        "czo": ["czo", "zh"],
+        "doq": ["doq", "sgn"],
+        "dse": ["dse", "sgn"],
+        "dsl": ["dsl", "sgn"],
+        "dup": ["dup", "ms"],
+        "ecs": ["ecs", "sgn"],
+        "esl": ["esl", "sgn"],
+        "esn": ["esn", "sgn"],
+        "eso": ["eso", "sgn"],
+        "eth": ["eth", "sgn"],
+        "fcs": ["fcs", "sgn"],
+        "fse": ["fse", "sgn"],
+        "fsl": ["fsl", "sgn"],
+        "fss": ["fss", "sgn"],
+        "gan": ["gan", "zh"],
+        "gom": ["gom", "kok"],
+        "gse": ["gse", "sgn"],
+        "gsg": ["gsg", "sgn"],
+        "gsm": ["gsm", "sgn"],
+        "gss": ["gss", "sgn"],
+        "gus": ["gus", "sgn"],
+        "hab": ["hab", "sgn"],
+        "haf": ["haf", "sgn"],
+        "hak": ["hak", "zh"],
+        "hds": ["hds", "sgn"],
+        "hji": ["hji", "ms"],
+        "hks": ["hks", "sgn"],
+        "hos": ["hos", "sgn"],
+        "hps": ["hps", "sgn"],
+        "hsh": ["hsh", "sgn"],
+        "hsl": ["hsl", "sgn"],
+        "hsn": ["hsn", "zh"],
+        "icl": ["icl", "sgn"],
+        "ils": ["ils", "sgn"],
+        "inl": ["inl", "sgn"],
+        "ins": ["ins", "sgn"],
+        "ise": ["ise", "sgn"],
+        "isg": ["isg", "sgn"],
+        "isr": ["isr", "sgn"],
+        "jak": ["jak", "ms"],
+        "jax": ["jax", "ms"],
+        "jcs": ["jcs", "sgn"],
+        "jhs": ["jhs", "sgn"],
+        "jls": ["jls", "sgn"],
+        "jos": ["jos", "sgn"],
+        "jsl": ["jsl", "sgn"],
+        "jus": ["jus", "sgn"],
+        "kgi": ["kgi", "sgn"],
+        "knn": ["knn", "kok"],
+        "kvb": ["kvb", "ms"],
+        "kvk": ["kvk", "sgn"],
+        "kvr": ["kvr", "ms"],
+        "kxd": ["kxd", "ms"],
+        "lbs": ["lbs", "sgn"],
+        "lce": ["lce", "ms"],
+        "lcf": ["lcf", "ms"],
+        "liw": ["liw", "ms"],
+        "lls": ["lls", "sgn"],
+        "lsg": ["lsg", "sgn"],
+        "lsl": ["lsl", "sgn"],
+        "lso": ["lso", "sgn"],
+        "lsp": ["lsp", "sgn"],
+        "lst": ["lst", "sgn"],
+        "lsy": ["lsy", "sgn"],
+        "ltg": ["ltg", "lv"],
+        "lvs": ["lvs", "lv"],
+        "lzh": ["lzh", "zh"],
+        "max": ["max", "ms"],
+        "mdl": ["mdl", "sgn"],
+        "meo": ["meo", "ms"],
+        "mfa": ["mfa", "ms"],
+        "mfb": ["mfb", "ms"],
+        "mfs": ["mfs", "sgn"],
+        "min": ["min", "ms"],
+        "mnp": ["mnp", "zh"],
+        "mqg": ["mqg", "ms"],
+        "mre": ["mre", "sgn"],
+        "msd": ["msd", "sgn"],
+        "msi": ["msi", "ms"],
+        "msr": ["msr", "sgn"],
+        "mui": ["mui", "ms"],
+        "mzc": ["mzc", "sgn"],
+        "mzg": ["mzg", "sgn"],
+        "mzy": ["mzy", "sgn"],
+        "nan": ["nan", "zh"],
+        "nbs": ["nbs", "sgn"],
+        "ncs": ["ncs", "sgn"],
+        "nsi": ["nsi", "sgn"],
+        "nsl": ["nsl", "sgn"],
+        "nsp": ["nsp", "sgn"],
+        "nsr": ["nsr", "sgn"],
+        "nzs": ["nzs", "sgn"],
+        "okl": ["okl", "sgn"],
+        "orn": ["orn", "ms"],
+        "ors": ["ors", "ms"],
+        "pel": ["pel", "ms"],
+        "pga": ["pga", "ar"],
+        "pks": ["pks", "sgn"],
+        "prl": ["prl", "sgn"],
+        "prz": ["prz", "sgn"],
+        "psc": ["psc", "sgn"],
+        "psd": ["psd", "sgn"],
+        "pse": ["pse", "ms"],
+        "psg": ["psg", "sgn"],
+        "psl": ["psl", "sgn"],
+        "pso": ["pso", "sgn"],
+        "psp": ["psp", "sgn"],
+        "psr": ["psr", "sgn"],
+        "pys": ["pys", "sgn"],
+        "rms": ["rms", "sgn"],
+        "rsi": ["rsi", "sgn"],
+        "rsl": ["rsl", "sgn"],
+        "sdl": ["sdl", "sgn"],
+        "sfb": ["sfb", "sgn"],
+        "sfs": ["sfs", "sgn"],
+        "sgg": ["sgg", "sgn"],
+        "sgx": ["sgx", "sgn"],
+        "shu": ["shu", "ar"],
+        "slf": ["slf", "sgn"],
+        "sls": ["sls", "sgn"],
+        "sqs": ["sqs", "sgn"],
+        "ssh": ["ssh", "ar"],
+        "ssp": ["ssp", "sgn"],
+        "ssr": ["ssr", "sgn"],
+        "svk": ["svk", "sgn"],
+        "swc": ["swc", "sw"],
+        "swh": ["swh", "sw"],
+        "swl": ["swl", "sgn"],
+        "syy": ["syy", "sgn"],
+        "tmw": ["tmw", "ms"],
+        "tse": ["tse", "sgn"],
+        "tsm": ["tsm", "sgn"],
+        "tsq": ["tsq", "sgn"],
+        "tss": ["tss", "sgn"],
+        "tsy": ["tsy", "sgn"],
+        "tza": ["tza", "sgn"],
+        "ugn": ["ugn", "sgn"],
+        "ugy": ["ugy", "sgn"],
+        "ukl": ["ukl", "sgn"],
+        "uks": ["uks", "sgn"],
+        "urk": ["urk", "ms"],
+        "uzn": ["uzn", "uz"],
+        "uzs": ["uzs", "uz"],
+        "vgt": ["vgt", "sgn"],
+        "vkk": ["vkk", "ms"],
+        "vkt": ["vkt", "ms"],
+        "vsi": ["vsi", "sgn"],
+        "vsl": ["vsl", "sgn"],
+        "vsv": ["vsv", "sgn"],
+        "wuu": ["wuu", "zh"],
+        "xki": ["xki", "sgn"],
+        "xml": ["xml", "sgn"],
+        "xmm": ["xmm", "ms"],
+        "xms": ["xms", "sgn"],
+        "yds": ["yds", "sgn"],
+        "ysl": ["ysl", "sgn"],
+        "yue": ["yue", "zh"],
+        "zib": ["zib", "sgn"],
+        "zlm": ["zlm", "ms"],
+        "zmi": ["zmi", "ms"],
+        "zsl": ["zsl", "sgn"],
+        "zsm": ["zsm", "ms"]
+    };
+
+
+    /**
+     * Canonicalizes the given well-formed BCP 47 language tag, including regularized case of subtags.
+     *
+     * Spec: ECMAScript Internationalization API Specification, draft, 6.2.3.
+     * Spec: RFC 5646, section 4.5.
+     */
+    function canonicalizeLanguageTag(locale) {
+
+        // start with lower case for easier processing, and because most subtags will need to be lower case anyway
+        locale = locale.toLowerCase();
+
+        // handle mappings for complete tags
+        if (__tagMappings.hasOwnProperty(locale)) {
+            return __tagMappings[locale];
+        }
+
+        var subtags = locale.split("-");
+        var i = 0;
+
+        // handle standard part: all subtags before first singleton or "x"
+        while (i < subtags.length) {
+            var subtag = subtags[i];
+            if (subtag.length === 1 && (i > 0 || subtag === "x")) {
+                break;
+            } else if (i !== 0 && subtag.length === 2) {
+                subtag = subtag.toUpperCase();
+            } else if (subtag.length === 4) {
+                subtag = subtag[0].toUpperCase() + subtag.substring(1).toLowerCase();
+            }
+            if (__subtagMappings.hasOwnProperty(subtag)) {
+                subtag = __subtagMappings[subtag];
+            } else if (__extlangMappings.hasOwnProperty(subtag)) {
+                subtag = __extlangMappings[subtag][0];
+                if (i === 1 && __extlangMappings[subtag][1] === subtags[0]) {
+                    subtags.shift();
+                    i--;
+                }
+            }
+            subtags[i] = subtag;
+            i++;
+        }
+        var normal = subtags.slice(0, i).join("-");
+
+        // handle extensions
+        var extensions = [];
+        while (i < subtags.length && subtags[i] !== "x") {
+            var extensionStart = i;
+            i++;
+            while (i < subtags.length && subtags[i].length > 1) {
+                i++;
+            }
+            var extension = subtags.slice(extensionStart, i).join("-");
+            extensions.push(extension);
+        }
+        extensions.sort();
+
+        // handle private use
+        var privateUse;
+        if (i < subtags.length) {
+            privateUse = subtags.slice(i).join("-");
+        }
+
+        // put everything back together
+        var canonical = normal;
+        if (extensions.length > 0) {
+            canonical += "-" + extensions.join("-");
+        }
+        if (privateUse !== undefined) {
+            if (canonical.length > 0) {
+                canonical += "-" + privateUse;
+            } else {
+                canonical = privateUse;
+            }
+        }
+
+        return canonical;
+    }
+
+    return typeof locale === "string" && isStructurallyValidLanguageTag(locale) &&
+            canonicalizeLanguageTag(locale) === locale;
+}
+
+
+/**
+ * Tests whether the named options property is correctly handled by the given constructor.
+ * @param {object} Constructor the constructor to test.
+ * @param {string} property the name of the options property to test.
+ * @param {string} type the type that values of the property are expected to have
+ * @param {Array} [values] an array of allowed values for the property. Not needed for boolean.
+ * @param {any} fallback the fallback value that the property assumes if not provided.
+ * @param {object} testOptions additional options:
+ *     @param {boolean} isOptional whether support for this property is optional for implementations.
+ *     @param {boolean} noReturn whether the resulting value of the property is not returned.
+ *     @param {boolean} isILD whether the resulting value of the property is implementation and locale dependent.
+ *     @param {object} extra additional option to pass along, properties are value -> {option: value}.
+ * @return {boolean} whether the test succeeded.
+ */
+function testOption(Constructor, property, type, values, fallback, testOptions) {
+    var isOptional = testOptions !== undefined && testOptions.isOptional === true;
+    var noReturn = testOptions !== undefined && testOptions.noReturn === true;
+    var isILD = testOptions !== undefined && testOptions.isILD === true;
+    
+    function addExtraOptions(options, value, testOptions) {
+        if (testOptions !== undefined && testOptions.extra !== undefined) {
+            var extra;
+            if (value !== undefined && testOptions.extra[value] !== undefined) {
+                extra = testOptions.extra[value];
+            } else if (testOptions.extra.any !== undefined) {
+                extra = testOptions.extra.any;
+            }
+            if (extra !== undefined) {
+                Object.getOwnPropertyNames(extra).forEach(function (prop) {
+                    options[prop] = extra[prop];
+                });
+            }
+        }
+    }
+
+    var testValues, options, obj, expected, actual, error;
+
+    // test that the specified values are accepted. Also add values that convert to specified values.
+    if (type === "boolean") {
+        if (values === undefined) {
+            values = [true, false];
+        }
+        testValues = values.slice(0);
+        testValues.push(888);
+        testValues.push(0);
+    } else if (type === "string") {
+        testValues = values.slice(0);
+        testValues.push({toString: function () { return values[0]; }});
+    }
+    testValues.forEach(function (value) {
+        options = {};
+        options[property] = value;
+        addExtraOptions(options, value, testOptions);
+        obj = new Constructor(undefined, options);
+        if (noReturn) {
+            if (obj.resolvedOptions().hasOwnProperty(property)) {
+                $ERROR("Option property " + property + " is returned, but shouldn't be.");
+            }
+        } else {
+            actual = obj.resolvedOptions()[property];
+            if (isILD) {
+                if (actual !== undefined && values.indexOf(actual) === -1) {
+                    $ERROR("Invalid value " + actual + " returned for property " + property + ".");
+                }
+            } else {
+                if (type === "boolean") {
+                    expected = Boolean(value);
+                } else if (type === "string") {
+                    expected = String(value);
+                }
+                if (actual !== expected && !(isOptional && actual === undefined)) {
+                    $ERROR("Option value " + value + " for property " + property +
+                        " was not accepted; got " + actual + " instead.");
+                }
+            }
+        }
+    });
+
+    // test that invalid values are rejected
+    if (type === "string") {
+        var invalidValues = ["invalidValue", -1, null];
+        // assume that we won't have values in caseless scripts
+        if (values[0].toUpperCase() !== values[0]) {
+            invalidValues.push(values[0].toUpperCase());
+        } else {
+            invalidValues.push(values[0].toLowerCase());
+        }
+        invalidValues.forEach(function (value) {
+            options = {};
+            options[property] = value;
+            addExtraOptions(options, value, testOptions);
+            error = undefined;
+            try {
+                obj = new Constructor(undefined, options);
+            } catch (e) {
+                error = e;
+            }
+            if (error === undefined) {
+                $ERROR("Invalid option value " + value + " for property " + property + " was not rejected.");
+            } else if (error.name !== "RangeError") {
+                $ERROR("Invalid option value " + value + " for property " + property + " was rejected with wrong error " + error.name + ".");
+            }
+        });
+    }
+
+    // test that fallback value or another valid value is used if no options value is provided
+    if (!noReturn) {
+        options = {};
+        addExtraOptions(options, undefined, testOptions);
+        obj = new Constructor(undefined, options);
+        actual = obj.resolvedOptions()[property];
+        if (!(isOptional && actual === undefined)) {
+            if (fallback !== undefined) {
+                if (actual !== fallback) {
+                    $ERROR("Option fallback value " + fallback + " for property " + property +
+                        " was not used; got " + actual + " instead.");
+                }
+            } else {
+                if (values.indexOf(actual) === -1 && !(isILD && actual === undefined)) {
+                    $ERROR("Invalid value " + actual + " returned for property " + property + ".");
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+
+/**
+ * Tests whether the named property of the given object has a valid value
+ * and the default attributes of the properties of an object literal.
+ * @param {Object} obj the object to be tested.
+ * @param {string} property the name of the property
+ * @param {Function|Array} valid either a function that tests value for validity and returns a boolean,
+ *     an array of valid values.
+ * @exception if the property has an invalid value.
+ */
+function testProperty(obj, property, valid) {
+    var desc = Object.getOwnPropertyDescriptor(obj, property);
+    if (!desc.writable) {
+        $ERROR("Property " + property + " must be writable.");
+    }
+    if (!desc.enumerable) {
+        $ERROR("Property " + property + " must be enumerable.");
+    }
+    if (!desc.configurable) {
+        $ERROR("Property " + property + " must be configurable.");
+    }
+    var value = desc.value;
+    var isValid = (typeof valid === "function") ? valid(value) : (valid.indexOf(value) !== -1);
+    if (!isValid) {
+        $ERROR("Property value " + value + " is not allowed for property " + property + ".");
+    }
+}
+
+
+/**
+ * Tests whether the named property of the given object, if present at all, has a valid value
+ * and the default attributes of the properties of an object literal.
+ * @param {Object} obj the object to be tested.
+ * @param {string} property the name of the property
+ * @param {Function|Array} valid either a function that tests value for validity and returns a boolean,
+ *     an array of valid values.
+ * @exception if the property is present and has an invalid value.
+ */
+function mayHaveProperty(obj, property, valid) {
+    if (obj.hasOwnProperty(property)) {
+        testProperty(obj, property, valid);
+    }
+}
+
+
+/**
+ * Tests whether the given object has the named property with a valid value
+ * and the default attributes of the properties of an object literal.
+ * @param {Object} obj the object to be tested.
+ * @param {string} property the name of the property
+ * @param {Function|Array} valid either a function that tests value for validity and returns a boolean,
+ *     an array of valid values.
+ * @exception if the property is missing or has an invalid value.
+ */
+function mustHaveProperty(obj, property, valid) {
+    if (!obj.hasOwnProperty(property)) {
+        $ERROR("Object is missing property " + property + ".");
+    }
+    testProperty(obj, property, valid);
+}
+
+
+/**
+ * Tests whether the given object does not have the named property.
+ * @param {Object} obj the object to be tested.
+ * @param {string} property the name of the property
+ * @exception if the property is present.
+ */
+function mustNotHaveProperty(obj, property) {
+    if (obj.hasOwnProperty(property)) {
+        $ERROR("Object has property it mustn't have: " + property + ".");
+    }
+}
+
+
+/**
+ * Properties of the RegExp constructor that may be affected by use of regular
+ * expressions, and the default values of these properties. Properties are from
+ * https://developer.mozilla.org/en-US/docs/JavaScript/Reference/Deprecated_and_obsolete_features#RegExp_Properties
+ */
+var regExpProperties = ["$1", "$2", "$3", "$4", "$5", "$6", "$7", "$8", "$9",
+    "$_", "$*", "$&", "$+", "$`", "$'",
+    "input", "lastMatch", "lastParen", "leftContext", "rightContext"
+];
+
+var regExpPropertiesDefaultValues = (function () {
+    var values = Object.create(null);
+    regExpProperties.forEach(function (property) {
+        values[property] = RegExp[property];
+    });
+    return values;
+}());
+
+
+/**
+ * Tests that executing the provided function (which may use regular expressions
+ * in its implementation) does not create or modify unwanted properties on the
+ * RegExp constructor.
+ */
+function testForUnwantedRegExpChanges(testFunc) {
+    regExpProperties.forEach(function (property) {
+        RegExp[property] = regExpPropertiesDefaultValues[property];
+    });
+    testFunc();
+    regExpProperties.forEach(function (property) {
+        if (RegExp[property] !== regExpPropertiesDefaultValues[property]) {
+            $ERROR("RegExp has unexpected property " + property + " with value " +
+                RegExp[property] + ".");
+        }
+    });
+}
+
+
+/**
+ * Tests whether name is a valid BCP 47 numbering system name
+ * and not excluded from use in the ECMAScript Internationalization API.
+ * @param {string} name the name to be tested.
+ * @return {boolean} whether name is a valid BCP 47 numbering system name and
+ *     allowed for use in the ECMAScript Internationalization API.
+ */
+
+function isValidNumberingSystem(name) {
+    
+    // source: CLDR file common/bcp47/number.xml; version CLDR 21.
+    var numberingSystems = [
+        "arab",
+        "arabext",
+        "armn",
+        "armnlow",
+        "bali",
+        "beng",
+        "brah",
+        "cakm",
+        "cham",
+        "deva",
+        "ethi",
+        "finance",
+        "fullwide",
+        "geor",
+        "grek",
+        "greklow",
+        "gujr",
+        "guru",
+        "hanidec",
+        "hans",
+        "hansfin",
+        "hant",
+        "hantfin",
+        "hebr",
+        "java",
+        "jpan",
+        "jpanfin",
+        "kali",
+        "khmr",
+        "knda",
+        "osma",            
+        "lana",
+        "lanatham",
+        "laoo",
+        "latn",
+        "lepc",
+        "limb",
+        "mlym",
+        "mong",
+        "mtei",
+        "mymr",
+        "mymrshan",
+        "native",
+        "nkoo",
+        "olck",
+        "orya",
+        "roman",
+        "romanlow",
+        "saur",
+        "shrd",
+        "sora",
+        "sund",
+        "talu",
+        "takr",
+        "taml",
+        "tamldec",
+        "telu",
+        "thai",
+        "tibt",
+        "traditio",
+        "vaii"
+    ];
+    
+    var excluded = [
+        "finance",
+        "native",
+        "traditio"
+    ];
+        
+    
+    return numberingSystems.indexOf(name) !== -1 && excluded.indexOf(name) === -1;
+}
+
+
+/**
+ * Provides the digits of numbering systems with simple digit mappings,
+ * as specified in 11.3.2.
+ */
+
+var numberingSystemDigits = {
+    arab: "٠١٢٣٤٥٦٧٨٩",
+    arabext: "۰۱۲۳۴۵۶۷۸۹",
+    beng: "০১২৩৪৫৬৭৮৯",
+    deva: "०१२३४५६७८९",
+    fullwide: "０１２３４５６７８９",
+    gujr: "૦૧૨૩૪૫૬૭૮૯",
+    guru: "੦੧੨੩੪੫੬੭੮੯",
+    hanidec: "〇一二三四五六七八九",
+    khmr: "០១២៣៤៥៦៧៨៩",
+    knda: "೦೧೨೩೪೫೬೭೮೯",
+    laoo: "໐໑໒໓໔໕໖໗໘໙",
+    latn: "0123456789",
+    mlym: "൦൧൨൩൪൫൬൭൮൯",
+    mong: "᠐᠑᠒᠓᠔᠕᠖᠗᠘᠙",
+    mymr: "၀၁၂၃၄၅၆၇၈၉",
+    orya: "୦୧୨୩୪୫୬୭୮୯",
+    tamldec: "௦௧௨௩௪௫௬௭௮௯",
+    telu: "౦౧౨౩౪౫౬౭౮౯",
+    thai: "๐๑๒๓๔๕๖๗๘๙",
+    tibt: "༠༡༢༣༤༥༦༧༨༩"
+};
+
+
+/**
+ * Tests that number formatting is handled correctly. The function checks that the
+ * digit sequences in formatted output are as specified, converted to the
+ * selected numbering system, and embedded in consistent localized patterns.
+ * @param {Array} locales the locales to be tested.
+ * @param {Array} numberingSystems the numbering systems to be tested.
+ * @param {Object} options the options to pass to Intl.NumberFormat. Options
+ *     must include {useGrouping: false}, and must cause 1.1 to be formatted
+ *     pre- and post-decimal digits.
+ * @param {Object} testData maps input data (in ES5 9.3.1 format) to expected output strings
+ *     in unlocalized format with Western digits.
+ */
+
+function testNumberFormat(locales, numberingSystems, options, testData) {
+    locales.forEach(function (locale) {
+        numberingSystems.forEach(function (numbering) {
+            var digits = numberingSystemDigits[numbering];
+            var format = new Intl.NumberFormat([locale + "-u-nu-" + numbering], options);
+    
+            function getPatternParts(positive) {
+                var n = positive ? 1.1 : -1.1;
+                var formatted = format.format(n);
+                var oneoneRE = "([^" + digits + "]*)[" + digits + "]+([^" + digits + "]+)[" + digits + "]+([^" + digits + "]*)";
+                var match = formatted.match(new RegExp(oneoneRE));
+                if (match === null) {
+                    $ERROR("Unexpected formatted " + n + " for " +
+                        format.resolvedOptions().locale + " and options " +
+                        JSON.stringify(options) + ": " + formatted);
+                }
+                return match;
+            }
+            
+            function toNumbering(raw) {
+                return raw.replace(/[0-9]/g, function (digit) {
+                    return digits[digit.charCodeAt(0) - "0".charCodeAt(0)];
+                });
+            }
+            
+            function buildExpected(raw, patternParts) {
+                var period = raw.indexOf(".");
+                if (period === -1) {
+                    return patternParts[1] + toNumbering(raw) + patternParts[3];
+                } else {
+                    return patternParts[1] + 
+                        toNumbering(raw.substring(0, period)) +
+                        patternParts[2] +
+                        toNumbering(raw.substring(period + 1)) +
+                        patternParts[3];
+                }
+            }
+            
+            if (format.resolvedOptions().numberingSystem === numbering) {
+                // figure out prefixes, infixes, suffixes for positive and negative values
+                var posPatternParts = getPatternParts(true);
+                var negPatternParts = getPatternParts(false);
+                
+                Object.getOwnPropertyNames(testData).forEach(function (input) {
+                    var rawExpected = testData[input];
+                    var patternParts;
+                    if (rawExpected[0] === "-") {
+                        patternParts = negPatternParts;
+                        rawExpected = rawExpected.substring(1);
+                    } else {
+                        patternParts = posPatternParts;
+                    }
+                    var expected = buildExpected(rawExpected, patternParts);
+                    var actual = format.format(input);
+                    if (actual !== expected) {
+                        $ERROR("Formatted value for " + input + ", " +
+                        format.resolvedOptions().locale + " and options " +
+                        JSON.stringify(options) + " is " + actual + "; expected " + expected + ".");
+                    }
+                });
+            }
+        });
+    });
+}
+
+
+/**
+ * Return the components of date-time formats.
+ * @return {Array} an array with all date-time components.
+ */
+
+function getDateTimeComponents() {
+    return ["weekday", "era", "year", "month", "day", "hour", "minute", "second", "timeZoneName"];
+}
+
+
+/**
+ * Return the valid values for the given date-time component, as specified
+ * by the table in section 12.1.1.
+ * @param {string} component a date-time component.
+ * @return {Array} an array with the valid values for the component.
+ */
+
+function getDateTimeComponentValues(component) {
+    
+    var components = {
+        weekday: ["narrow", "short", "long"],
+        era: ["narrow", "short", "long"],
+        year: ["2-digit", "numeric"],
+        month: ["2-digit", "numeric", "narrow", "short", "long"],
+        day: ["2-digit", "numeric"],
+        hour: ["2-digit", "numeric"],
+        minute: ["2-digit", "numeric"],
+        second: ["2-digit", "numeric"],
+        timeZoneName: ["short", "long"]
+    };
+    
+    var result = components[component];
+    if (result === undefined) {
+        $ERROR("Internal error: No values defined for date-time component " + component + ".");
+    }
+    return result;
+}
+
+
+/**
+ * Tests that the given value is valid for the given date-time component.
+ * @param {string} component a date-time component.
+ * @param {string} value the value to be tested.
+ * @return {boolean} true if the test succeeds.
+ * @exception if the test fails.
+ */
+
+function testValidDateTimeComponentValue(component, value) {
+    if (getDateTimeComponentValues(component).indexOf(value) === -1) {
+        $ERROR("Invalid value " + value + " for date-time component " + component + ".");
+    }
+    return true;
+}
+
+
+/**
+ * @description Tests whether timeZone is a String value representing a
+ * structurally valid and canonicalized time zone name, as defined in
+ * sections 6.4.1 and 6.4.2 of the ECMAScript Internationalization API
+ * Specification.
+ * @param {String} timeZone the string to be tested.
+ * @result {Boolean} whether the test succeeded.
+ */
+
+function isCanonicalizedStructurallyValidTimeZoneName(timeZone) {
+    /**
+     * Regular expression defining IANA Time Zone names.
+     *
+     * Spec: IANA Time Zone Database, Theory file
+     */
+    var fileNameComponent = "(?:[A-Za-z_]|\\.(?!\\.?(?:/|$)))[A-Za-z.\\-_]{0,13}";
+    var fileName = fileNameComponent + "(?:/" + fileNameComponent + ")*";
+    var etcName = "(?:Etc/)?GMT[+-]\\d{1,2}";
+    var systemVName = "SystemV/[A-Z]{3}\\d{1,2}(?:[A-Z]{3})?";
+    var legacyName = etcName + "|" + systemVName + "|CST6CDT|EST5EDT|MST7MDT|PST8PDT|NZ|Canada/East-Saskatchewan";
+    var zoneNamePattern = new RegExp("^(?:" + fileName + "|" + legacyName + ")$");
+
+    if (typeof timeZone !== "string") {
         return false;
     }
-
-    for (var type in this.connections) {
-      for (var connection in this.connections[type]) {
-        var connection = this.connections[type][connection];
-        if (connection.to == neuron) {
-          result.type = type;
-          result.connection = connection;
-          return result;
-        } else if (connection.from == neuron) {
-          result.type = type;
-          result.connection = connection;
-          return result;
-        }
-      }
+    // 6.4.2 CanonicalizeTimeZoneName (timeZone), step 3
+    if (timeZone === "UTC") {
+        return true;
     }
-
-    return false;
-  },
-
-  // clears all the traces (the neuron forgets it's context, but the connections remain intact)
-  clear: function() {
-
-    for (var trace in this.trace.elegibility)
-      this.trace.elegibility[trace] = 0;
-
-    for (var trace in this.trace.extended)
-      for (var extended in this.trace.extended[trace])
-        this.trace.extended[trace][extended] = 0;
-
-    this.error.responsibility = this.error.projected = this.error.gated = 0;
-  },
-
-  // all the connections are randomized and the traces are cleared
-  reset: function() {
-    this.clear();
-
-    for (var type in this.connections)
-      for (var connection in this.connections[type])
-        this.connections[type][connection].weight = Math.random() * .2 - .1;
-    this.bias = Math.random() * .2 - .1;
-
-    this.old = this.state = this.activation = 0;
-  },
-
-  // hardcodes the behaviour of the neuron into an optimized function
-  optimize: function(optimized, layer) {
-
-    optimized = optimized || {};
-    var that = this;
-    var store_activation = [];
-    var store_trace = [];
-    var store_propagation = [];
-    var varID = optimized.memory || 0;
-    var neurons = optimized.neurons || 1;
-    var inputs = optimized.inputs || [];
-    var targets = optimized.targets || [];
-    var outputs = optimized.outputs || [];
-    var variables = optimized.variables || {};
-    var activation_sentences = optimized.activation_sentences || [];
-    var trace_sentences = optimized.trace_sentences || [];
-    var propagation_sentences = optimized.propagation_sentences || [];
-    var layers = optimized.layers || { __count: 0, __neuron: 0 };
-
-    // allocate sentences
-    var allocate = function(store){
-      var allocated = layer in layers && store[layers.__count];
-      if (!allocated)
-      {
-        layers.__count = store.push([]) - 1;
-        layers[layer] = layers.__count;
-      }
+    // 6.4.2 CanonicalizeTimeZoneName (timeZone), step 3
+    if (timeZone === "Etc/UTC" || timeZone === "Etc/GMT") {
+        return false;
     }
-    allocate(activation_sentences);
-    allocate(trace_sentences);
-    allocate(propagation_sentences);
-    var currentLayer = layers.__count;
-
-    // get/reserve space in memory by creating a unique ID for a variablel
-    var getVar = function() {
-      var args = Array.prototype.slice.call(arguments);
-
-      if (args.length == 1) {
-        if (args[0] == 'target') {
-          var id = 'target_' + targets.length;
-          targets.push(varID);
-        } else
-          var id = args[0];
-        if (id in variables)
-          return variables[id];
-        return variables[id] = {
-          value: 0,
-          id: varID++
-        };
-      } else {
-        var extended = args.length > 2;
-        if (extended)
-          var value = args.pop();
-
-        var unit = args.shift();
-        var prop = args.pop();
-
-        if (!extended)
-          var value = unit[prop];
-
-        var id = prop + '_';
-        for (var property in args)
-          id += args[property] + '_';
-        id += unit.ID;
-        if (id in variables)
-          return variables[id];
-
-        return variables[id] = {
-          value: value,
-          id: varID++
-        };
-      }
-    };
-
-    // build sentence
-    var buildSentence = function() {
-      var args = Array.prototype.slice.call(arguments);
-      var store = args.pop();
-      var sentence = "";
-      for (var i in args)
-        if (typeof args[i] == 'string')
-          sentence += args[i];
-        else
-          sentence += 'F[' + args[i].id + ']';
-
-      store.push(sentence + ';');
-    }
-
-    // helper to check if an object is empty
-    var isEmpty = function(obj) {
-      for (var prop in obj) {
-        if (obj.hasOwnProperty(prop))
-          return false;
-      }
-      return true;
-    };
-
-    // characteristics of the neuron
-    var noProjections = isEmpty(this.connections.projected);
-    var noGates = isEmpty(this.connections.gated);
-    var isInput = layer == 'input' ? true : isEmpty(this.connections.inputs);
-    var isOutput = layer == 'output' ? true : noProjections && noGates;
-
-    // optimize neuron's behaviour
-    var rate = getVar('rate');
-    var activation = getVar(this, 'activation');
-    if (isInput)
-      inputs.push(activation.id);
-    else {
-      activation_sentences[currentLayer].push(store_activation);
-      trace_sentences[currentLayer].push(store_trace);
-      propagation_sentences[currentLayer].push(store_propagation);
-      var old = getVar(this, 'old');
-      var state = getVar(this, 'state');
-      var bias = getVar(this, 'bias');
-      if (this.selfconnection.gater)
-        var self_gain = getVar(this.selfconnection, 'gain');
-      if (this.selfconnected())
-        var self_weight = getVar(this.selfconnection, 'weight');
-      buildSentence(old, ' = ', state, store_activation);
-      if (this.selfconnected())
-        if (this.selfconnection.gater)
-          buildSentence(state, ' = ', self_gain, ' * ', self_weight, ' * ',
-            state, ' + ', bias, store_activation);
-        else
-          buildSentence(state, ' = ', self_weight, ' * ', state, ' + ',
-            bias, store_activation);
-      else
-        buildSentence(state, ' = ', bias, store_activation);
-      for (var i in this.connections.inputs) {
-        var input = this.connections.inputs[i];
-        var input_activation = getVar(input.from, 'activation');
-        var input_weight = getVar(input, 'weight');
-        if (input.gater)
-          var input_gain = getVar(input, 'gain');
-        if (this.connections.inputs[i].gater)
-          buildSentence(state, ' += ', input_activation, ' * ',
-            input_weight, ' * ', input_gain, store_activation);
-        else
-          buildSentence(state, ' += ', input_activation, ' * ',
-            input_weight, store_activation);
-      }
-      var derivative = getVar(this, 'derivative');
-      switch (this.squash) {
-        case Neuron.squash.LOGISTIC:
-          buildSentence(activation, ' = (1 / (1 + Math.exp(-', state, ')))',
-            store_activation);
-          buildSentence(derivative, ' = ', activation, ' * (1 - ',
-            activation, ')', store_activation);
-          break;
-        case Neuron.squash.TANH:
-          var eP = getVar('aux');
-          var eN = getVar('aux_2');
-          buildSentence(eP, ' = Math.exp(', state, ')', store_activation);
-          buildSentence(eN, ' = 1 / ', eP, store_activation);
-          buildSentence(activation, ' = (', eP, ' - ', eN, ') / (', eP, ' + ', eN, ')', store_activation);
-          buildSentence(derivative, ' = 1 - (', activation, ' * ', activation, ')', store_activation);
-          break;
-        case Neuron.squash.IDENTITY:
-          buildSentence(activation, ' = ', state, store_activation);
-          buildSentence(derivative, ' = 1', store_activation);
-          break;
-        case Neuron.squash.HLIM:
-          buildSentence(activation, ' = +(', state, ' > 0)', store_activation);
-          buildSentence(derivative, ' = 1', store_activation);
-        case Neuron.squash.RELU:
-          buildSentence(activation, ' = ', state, ' > 0 ? ', state, ' : 0', store_activation);
-          buildSentence(derivative, ' = ', state, ' > 0 ? 1 : 0', store_activation);
-          break;
-      }
-
-      for (var id in this.trace.extended) {
-        // calculate extended elegibility traces in advance
-
-        var xtrace = this.trace.extended[id];
-        var neuron = this.neighboors[id];
-        var influence = getVar('influences[' + neuron.ID + ']');
-        var neuron_old = getVar(neuron, 'old');
-        var initialized = false;
-        if (neuron.selfconnection.gater == this)
-        {
-          buildSentence(influence, ' = ', neuron_old, store_trace);
-          initialized = true;
-        }
-        for (var incoming in this.trace.influences[neuron.ID]) {
-          var incoming_weight = getVar(this.trace.influences[neuron.ID]
-            [incoming], 'weight');
-          var incoming_activation = getVar(this.trace.influences[neuron.ID]
-            [incoming].from, 'activation');
-
-          if (initialized)
-            buildSentence(influence, ' += ', incoming_weight, ' * ', incoming_activation, store_trace);
-          else {
-            buildSentence(influence, ' = ', incoming_weight, ' * ', incoming_activation, store_trace);
-            initialized = true;
-          }
-        }
-      }
-
-      for (var i in this.connections.inputs) {
-        var input = this.connections.inputs[i];
-        if (input.gater)
-          var input_gain = getVar(input, 'gain');
-        var input_activation = getVar(input.from, 'activation');
-        var trace = getVar(this, 'trace', 'elegibility', input.ID, this.trace
-          .elegibility[input.ID]);
-        if (this.selfconnected()) {
-          if (this.selfconnection.gater) {
-            if (input.gater)
-              buildSentence(trace, ' = ', self_gain, ' * ', self_weight,
-                ' * ', trace, ' + ', input_gain, ' * ', input_activation,
-                store_trace);
-            else
-              buildSentence(trace, ' = ', self_gain, ' * ', self_weight,
-                ' * ', trace, ' + ', input_activation, store_trace);
-          } else {
-            if (input.gater)
-              buildSentence(trace, ' = ', self_weight, ' * ', trace, ' + ',
-                input_gain, ' * ', input_activation, store_trace);
-            else
-              buildSentence(trace, ' = ', self_weight, ' * ', trace, ' + ',
-                input_activation, store_trace);
-          }
-        } else {
-          if (input.gater)
-            buildSentence(trace, ' = ', input_gain, ' * ', input_activation,
-              store_trace);
-          else
-            buildSentence(trace, ' = ', input_activation, store_trace);
-        }
-        for (var id in this.trace.extended) {
-          // extended elegibility trace
-          var xtrace = this.trace.extended[id];
-          var neuron = this.neighboors[id];
-          var influence = getVar('influences[' + neuron.ID + ']');
-          var neuron_old = getVar(neuron, 'old');
-
-          var trace = getVar(this, 'trace', 'elegibility', input.ID, this.trace
-            .elegibility[input.ID]);
-          var xtrace = getVar(this, 'trace', 'extended', neuron.ID, input.ID,
-            this.trace.extended[neuron.ID][input.ID]);
-          if (neuron.selfconnected())
-            var neuron_self_weight = getVar(neuron.selfconnection, 'weight');
-          if (neuron.selfconnection.gater)
-            var neuron_self_gain = getVar(neuron.selfconnection, 'gain');
-          if (neuron.selfconnected())
-            if (neuron.selfconnection.gater)
-              buildSentence(xtrace, ' = ', neuron_self_gain, ' * ',
-                neuron_self_weight, ' * ', xtrace, ' + ', derivative, ' * ',
-                trace, ' * ', influence, store_trace);
-            else
-              buildSentence(xtrace, ' = ', neuron_self_weight, ' * ',
-                xtrace, ' + ', derivative, ' * ', trace, ' * ',
-                influence, store_trace);
-          else
-            buildSentence(xtrace, ' = ', derivative, ' * ', trace, ' * ',
-              influence, store_trace);
-        }
-      }
-      for (var connection in this.connections.gated) {
-        var gated_gain = getVar(this.connections.gated[connection], 'gain');
-        buildSentence(gated_gain, ' = ', activation, store_activation);
-      }
-    }
-    if (!isInput) {
-      var responsibility = getVar(this, 'error', 'responsibility', this.error
-        .responsibility);
-      if (isOutput) {
-        var target = getVar('target');
-        buildSentence(responsibility, ' = ', target, ' - ', activation,
-          store_propagation);
-        for (var id in this.connections.inputs) {
-          var input = this.connections.inputs[id];
-          var trace = getVar(this, 'trace', 'elegibility', input.ID, this.trace
-            .elegibility[input.ID]);
-          var input_weight = getVar(input, 'weight');
-          buildSentence(input_weight, ' += ', rate, ' * (', responsibility,
-            ' * ', trace, ')', store_propagation);
-        }
-        outputs.push(activation.id);
-      } else {
-        if (!noProjections && !noGates) {
-          var error = getVar('aux');
-          for (var id in this.connections.projected) {
-            var connection = this.connections.projected[id];
-            var neuron = connection.to;
-            var connection_weight = getVar(connection, 'weight');
-            var neuron_responsibility = getVar(neuron, 'error',
-              'responsibility', neuron.error.responsibility);
-            if (connection.gater) {
-              var connection_gain = getVar(connection, 'gain');
-              buildSentence(error, ' += ', neuron_responsibility, ' * ',
-                connection_gain, ' * ', connection_weight,
-                store_propagation);
-            } else
-              buildSentence(error, ' += ', neuron_responsibility, ' * ',
-                connection_weight, store_propagation);
-          }
-          var projected = getVar(this, 'error', 'projected', this.error.projected);
-          buildSentence(projected, ' = ', derivative, ' * ', error,
-            store_propagation);
-          buildSentence(error, ' = 0', store_propagation);
-          for (var id in this.trace.extended) {
-            var neuron = this.neighboors[id];
-            var influence = getVar('aux_2');
-            var neuron_old = getVar(neuron, 'old');
-            if (neuron.selfconnection.gater == this)
-              buildSentence(influence, ' = ', neuron_old, store_propagation);
-            else
-              buildSentence(influence, ' = 0', store_propagation);
-            for (var input in this.trace.influences[neuron.ID]) {
-              var connection = this.trace.influences[neuron.ID][input];
-              var connection_weight = getVar(connection, 'weight');
-              var neuron_activation = getVar(connection.from, 'activation');
-              buildSentence(influence, ' += ', connection_weight, ' * ',
-                neuron_activation, store_propagation);
-            }
-            var neuron_responsibility = getVar(neuron, 'error',
-              'responsibility', neuron.error.responsibility);
-            buildSentence(error, ' += ', neuron_responsibility, ' * ',
-              influence, store_propagation);
-          }
-          var gated = getVar(this, 'error', 'gated', this.error.gated);
-          buildSentence(gated, ' = ', derivative, ' * ', error,
-            store_propagation);
-          buildSentence(responsibility, ' = ', projected, ' + ', gated,
-            store_propagation);
-          for (var id in this.connections.inputs) {
-            var input = this.connections.inputs[id];
-            var gradient = getVar('aux');
-            var trace = getVar(this, 'trace', 'elegibility', input.ID, this
-              .trace.elegibility[input.ID]);
-            buildSentence(gradient, ' = ', projected, ' * ', trace,
-              store_propagation);
-            for (var id in this.trace.extended) {
-              var neuron = this.neighboors[id];
-              var neuron_responsibility = getVar(neuron, 'error',
-                'responsibility', neuron.error.responsibility);
-              var xtrace = getVar(this, 'trace', 'extended', neuron.ID,
-                input.ID, this.trace.extended[neuron.ID][input.ID]);
-              buildSentence(gradient, ' += ', neuron_responsibility, ' * ',
-                xtrace, store_propagation);
-            }
-            var input_weight = getVar(input, 'weight');
-            buildSentence(input_weight, ' += ', rate, ' * ', gradient,
-              store_propagation);
-          }
-
-        } else if (noGates) {
-          buildSentence(responsibility, ' = 0', store_propagation);
-          for (var id in this.connections.projected) {
-            var connection = this.connections.projected[id];
-            var neuron = connection.to;
-            var connection_weight = getVar(connection, 'weight');
-            var neuron_responsibility = getVar(neuron, 'error',
-              'responsibility', neuron.error.responsibility);
-            if (connection.gater) {
-              var connection_gain = getVar(connection, 'gain');
-              buildSentence(responsibility, ' += ', neuron_responsibility,
-                ' * ', connection_gain, ' * ', connection_weight,
-                store_propagation);
-            } else
-              buildSentence(responsibility, ' += ', neuron_responsibility,
-                ' * ', connection_weight, store_propagation);
-          }
-          buildSentence(responsibility, ' *= ', derivative,
-            store_propagation);
-          for (var id in this.connections.inputs) {
-            var input = this.connections.inputs[id];
-            var trace = getVar(this, 'trace', 'elegibility', input.ID, this
-              .trace.elegibility[input.ID]);
-            var input_weight = getVar(input, 'weight');
-            buildSentence(input_weight, ' += ', rate, ' * (',
-              responsibility, ' * ', trace, ')', store_propagation);
-          }
-        } else if (noProjections) {
-          buildSentence(responsibility, ' = 0', store_propagation);
-          for (var id in this.trace.extended) {
-            var neuron = this.neighboors[id];
-            var influence = getVar('aux');
-            var neuron_old = getVar(neuron, 'old');
-            if (neuron.selfconnection.gater == this)
-              buildSentence(influence, ' = ', neuron_old, store_propagation);
-            else
-              buildSentence(influence, ' = 0', store_propagation);
-            for (var input in this.trace.influences[neuron.ID]) {
-              var connection = this.trace.influences[neuron.ID][input];
-              var connection_weight = getVar(connection, 'weight');
-              var neuron_activation = getVar(connection.from, 'activation');
-              buildSentence(influence, ' += ', connection_weight, ' * ',
-                neuron_activation, store_propagation);
-            }
-            var neuron_responsibility = getVar(neuron, 'error',
-              'responsibility', neuron.error.responsibility);
-            buildSentence(responsibility, ' += ', neuron_responsibility,
-              ' * ', influence, store_propagation);
-          }
-          buildSentence(responsibility, ' *= ', derivative,
-            store_propagation);
-          for (var id in this.connections.inputs) {
-            var input = this.connections.inputs[id];
-            var gradient = getVar('aux');
-            buildSentence(gradient, ' = 0', store_propagation);
-            for (var id in this.trace.extended) {
-              var neuron = this.neighboors[id];
-              var neuron_responsibility = getVar(neuron, 'error',
-                'responsibility', neuron.error.responsibility);
-              var xtrace = getVar(this, 'trace', 'extended', neuron.ID,
-                input.ID, this.trace.extended[neuron.ID][input.ID]);
-              buildSentence(gradient, ' += ', neuron_responsibility, ' * ',
-                xtrace, store_propagation);
-            }
-            var input_weight = getVar(input, 'weight');
-            buildSentence(input_weight, ' += ', rate, ' * ', gradient,
-              store_propagation);
-          }
-        }
-      }
-      buildSentence(bias, ' += ', rate, ' * ', responsibility,
-        store_propagation);
-    }
-    return {
-      memory: varID,
-      neurons: neurons + 1,
-      inputs: inputs,
-      outputs: outputs,
-      targets: targets,
-      variables: variables,
-      activation_sentences: activation_sentences,
-      trace_sentences: trace_sentences,
-      propagation_sentences: propagation_sentences,
-      layers: layers
-    }
-  }
+    return zoneNamePattern.test(timeZone);
 }
 
 
-// represents a connection between two neurons
-Neuron.connection = function Connection(from, to, weight) {
-
-  if (!from || !to)
-    throw new Error("Connection Error: Invalid neurons");
-
-  this.ID = Neuron.connection.uid();
-  this.from = from;
-  this.to = to;
-  this.weight = typeof weight == 'undefined' ? Math.random() * .2 - .1 :
-    weight;
-  this.gain = 1;
-  this.gater = null;
+/**
+ * Verifies that the actual array matches the expected one in length, elements,
+ * and element order.
+ * @param {Array} expected the expected array.
+ * @param {Array} actual the actual array.
+ * @return {boolean} true if the test succeeds.
+ * @exception if the test fails.
+ */
+function testArraysAreSame(expected, actual) {
+    var i;
+    for (i = 0; i < Math.max(actual.length, expected.length); i++) {
+        if (actual[i] !== expected[i]) {
+            $ERROR("Result array element at index " + i + " should be \"" +
+                expected[i] + "\" but is \"" + actual[i] + "\".");
+        }
+    }
+    return true;
 }
 
-
-// squashing functions
-Neuron.squash = {};
-
-// eq. 5 & 5'
-Neuron.squash.LOGISTIC = function(x, derivate) {
-  if (!derivate)
-    return 1 / (1 + Math.exp(-x));
-  var fx = Neuron.squash.LOGISTIC(x);
-  return fx * (1 - fx);
-};
-Neuron.squash.TANH = function(x, derivate) {
-  if (derivate)
-    return 1 - Math.pow(Neuron.squash.TANH(x), 2);
-  var eP = Math.exp(x);
-  var eN = 1 / eP;
-  return (eP - eN) / (eP + eN);
-};
-Neuron.squash.IDENTITY = function(x, derivate) {
-  return derivate ? 1 : x;
-};
-Neuron.squash.HLIM = function(x, derivate) {
-  return derivate ? 1 : x > 0 ? 1 : 0;
-};
-Neuron.squash.RELU = function(x, derivate) {
-  if (derivate)
-    return x > 0 ? 1 : 0;
-  return x > 0 ? x : 0;
-};
-
-// unique ID's
-(function() {
-  var neurons = 0;
-  var connections = 0;
-  Neuron.uid = function() {
-    return neurons++;
-  }
-  Neuron.connection.uid = function() {
-    return connections++;
-  }
-  Neuron.quantity = function() {
-    return {
-      neurons: neurons,
-      connections: connections
-    }
-  }
-})();
