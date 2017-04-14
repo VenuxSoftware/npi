@@ -3,12 +3,18 @@
   Process: API generation
 */
 
-/*---
-description: Test that should timeout
-expected:
-  pass: false
-  message: Test timed out
----*/
-while (true) {
-  // do nothing, should timeout
+
+//-----------------------------------------------------------------------------
+function compareArray(a, b) {
+  if (b.length !== a.length) {
+    return false;
+  }
+
+  for (var i = 0; i < a.length; i++) {
+    if (b[i] !== a[i]) {
+      return false;
+    }
+  }
+  return true;
 }
+

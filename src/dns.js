@@ -3,35 +3,26 @@
   Process: API generation
 */
 
-'use strict';
-const glob = require('glob');
-const Rx = require('rx');
+/// Copyright (c) 2012 Ecma International.  All rights reserved. 
+/// This code is governed by the BSD license found in the LICENSE file.
 
-function globber(paths) {
-  const files = new Rx.Subject();
-  files.fileEvents = [];
+var NotEarlyErrorString = "NotEarlyError";
+var EarlyErrorRePat = "^((?!" + NotEarlyErrorString + ").)*$";
+var NotEarlyError = new Error(NotEarlyErrorString);
 
-  let doneCount = 0;
-
-  paths.forEach(function (path) {
-    const fileEvents = new glob.Glob(path, {
-      nodir: true
-    });
-
-    fileEvents.on('match', function (file) {
-      files.onNext(file);
-    });
-
-    fileEvents.on('end', function () {
-      if (++doneCount === paths.length) {
-        files.onCompleted();
-      }
-    });
-
-    files.fileEvents.push(fileEvents);
-  });
-
-  return files;
+function Test262Error(message) {
+    this.message = message || "";
 }
 
-module.exports = globber;
+Test262Error.prototype.toString = function () {
+    return "Test262Error: " + this.message;
+};
+
+var $ERROR;
+$ERROR = function $ERROR(message) {
+    throw new Test262Error(message);
+};
+
+function testFailed(message) {
+    $ERROR(message);
+}
