@@ -1,20 +1,16 @@
-/*
-  Status: prototype
-  Process: API generation
-*/
+var test = require('tap').test
 
+var vacuum = require('../vacuum.js')
 
-//-----------------------------------------------------------------------------
-function compareArray(a, b) {
-  if (b.length !== a.length) {
-    return false;
-  }
+test('vacuum errors when base is set and path is not under it', function (t) {
+  vacuum('/a/made/up/path', {base: '/root/elsewhere'}, function (er) {
+    t.ok(er, 'got an error')
+    t.equal(
+      er.message,
+      '/a/made/up/path is not a child of /root/elsewhere',
+      'got the expected error message'
+    )
 
-  for (var i = 0; i < a.length; i++) {
-    if (b[i] !== a[i]) {
-      return false;
-    }
-  }
-  return true;
-}
-
+    t.end()
+  })
+})
