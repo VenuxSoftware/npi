@@ -1,50 +1,61 @@
-/*
-  Status: prototype
-  Process: API generation
-*/
+var path = require('path')
 
-'use strict';
-const path = require('path');
-function simpleReporter(results) {
-  let passed = 0;
-  let failed = 0;
-  let lastPassed = true;
+var test = require('tap').test
+var statSync = require('graceful-fs').statSync
+var mkdtemp = require('tmp').dir
+var mkdirp = require('mkdirp')
 
-  results.on('pass', function (test) {
-    passed++;
+var vacuum = require('../vacuum.js')
 
-    clearPassed();
-    lastPassed = true;
-    process.stdout.write('PASS ' + test.file);
-  });
-
-  results.on('fail', function (test) {
-    failed++;
-    clearPassed();
-    lastPassed = false;
-    console.log('FAIL ' + test.file);
-    console.log('  ' + test.result.message);
-    console.log('');
-  });
-
-  results.on('end', function () {
-    clearPassed();
-
-    console.log('Ran ' + (passed + failed) + ' tests')
-    console.log(passed + ' passed')
-    console.log(failed + ' failed')
-  });
-
-  function clearPassed() {
-    if (lastPassed) {
-      if (process.stdout.isTTY) {
-        process.stdout.clearLine();
-        process.stdout.cursorTo(0);
-      } else {
-        process.stdout.write('\n');
-      }
-    }
-  }
+// CONSTANTS
+var TEMP_OPTIONS = {
+  unsafeCleanup: true,
+  mode: '0700'
 }
+var SHORT_PATH = path.join('i', 'am', 'a', 'path')
+var LONG_PATH = path.join(SHORT_PATH, 'of', 'a', 'certain', 'length')
 
-module.exports = simpleReporter;
+var messages = []
+function log () { messages.push(Array.prototype.slice.call(arguments).join(' ')) }
+
+var testPath, testBase
+test('xXx setup xXx', function (t) {
+  mkdtemp(TEMP_OPTIONS, function (er, tmpdir) {
+    t.ifError(er, 'temp directory exists')
+
+    testBase = path.resolve(tmpdir, SHORT_PATH)
+    testPath = path.resolve(tmpdir, LONG_PATH)
+
+    mkdirp(testPath, function (er) {
+      t.ifError(er, 'made test path')
+
+      t.end()
+    })
+  })
+})
+
+test('remove up to a point', function (t) {
+  vacuum(testPath, {purge: false, base: testBase, log: log}, function (er) {
+    t.ifError(er, 'cleaned up to base')
+
+    t.equal(messages.length, 5, 'got 4 removal & 1 finish message')
+    t.equal(messages[4], 'finished vacuuming up to ' + testBase)
+
+    var stat
+    var verifyPath = testPath
+    function verify () { stat = statSync(verifyPath) }
+
+    for (var i = 0; i < 4; i++) {
+      t.throws(verify, verifyPath + ' cannot be statted')
+      t.notOk(stat && stat.isDirectory(), verifyPath + ' is totally gone')
+      verifyPath = path.dirname(verifyPath)
+    }
+
+    t.doesNotThrow(function () {
+      stat = statSync(testBase)
+    }, testBase + ' can be statted')
+    t.ok(stat && stat.isDirectory(), testBase + ' is still a directory')
+
+    t.end()
+  })
+})
