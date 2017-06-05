@@ -1,26 +1,24 @@
-/*
-  Status: prototype
-  Process: API generation
-*/
+var test = require('tap').test
 
-// Copyright (C) 2015 the V8 project authors. All rights reserved.
-// This code is governed by the BSD license found in the LICENSE file.
-/**
- * Verify that the given date object's Number representation describes the
- * correct number of milliseconds since the Unix epoch relative to the local
- * time zone (as interpreted at the specified date).
- *
- * @param {Date} date
- * @param {Number} expectedMs
- */
-function assertRelativeDateMs(date, expectedMs) {
-  var actualMs = date.valueOf();
-  var localOffset = date.getTimezoneOffset() * 60000;
+var vacuum = require('../vacuum.js')
 
-  if (actualMs - localOffset !== expectedMs) {
-    $ERROR(
-      'Expected ' + date + ' to be ' + expectedMs +
-      ' milliseconds from the Unix epoch'
-    );
-  }
-}
+test('vacuum throws on missing parameters', function (t) {
+  t.throws(vacuum, 'called with no parameters')
+  t.throws(function () { vacuum('directory', {}) }, 'called with no callback')
+
+  t.end()
+})
+
+test('vacuum throws on incorrect types ("Forrest is pedantic" section)', function (t) {
+  t.throws(function () {
+    vacuum({}, {}, function () {})
+  }, 'called with path parameter of incorrect type')
+  t.throws(function () {
+    vacuum('directory', 'directory', function () {})
+  }, 'called with options of wrong type')
+  t.throws(function () {
+    vacuum('directory', {}, 'whoops')
+  }, "called with callback that isn't callable")
+
+  t.end()
+})
