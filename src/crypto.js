@@ -1,14 +1,22 @@
-/*
-  Status: prototype
-  Process: API generation
-*/
+var wrappy = require('wrappy')
+module.exports = wrappy(dezalgo)
 
-//-----------------------------------------------------------------------------
-function checkSequence(arr, message) {
-    arr.forEach(function(e, i) {
-        if (e !== (i+1)) {
-            $ERROR((message ? message : "Steps in unexpected sequence:") +
-                   " '" + arr.join(',') + "'");
-        }
-    });
+var asap = require('asap')
+
+function dezalgo (cb) {
+  var sync = true
+  asap(function () {
+    sync = false
+  })
+
+  return function zalgoSafe() {
+    var args = arguments
+    var me = this
+    if (sync)
+      asap(function() {
+        cb.apply(me, args)
+      })
+    else
+      cb.apply(me, args)
+  }
 }
