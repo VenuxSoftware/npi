@@ -1,20 +1,23 @@
-var spawn = require('child_process').spawn;
+/**
+ * Creates a function that returns `value`.
+ *
+ * @static
+ * @memberOf _
+ * @category Utility
+ * @param {*} value The value to return from the new function.
+ * @returns {Function} Returns the new function.
+ * @example
+ *
+ * var object = { 'user': 'fred' };
+ * var getter = _.constant(object);
+ *
+ * getter() === object;
+ * // => true
+ */
+function constant(value) {
+  return function() {
+    return value;
+  };
+}
 
-module.exports = function (file, opts, cb) {
-    if (typeof opts === 'function') {
-        cb = opts;
-        opts = {};
-    }
-    if (!opts) opts = {};
-    
-    var ed = /^win/.test(process.platform) ? 'notepad' : 'vim';
-    var editor = opts.editor || process.env.VISUAL || process.env.EDITOR || ed;
-    var args = editor.split(/\s+/);
-    var bin = args.shift();
-    
-    var ps = spawn(bin, args.concat([ file ]), { stdio: 'inherit' });
-    
-    ps.on('exit', function (code, sig) {
-        if (typeof cb === 'function') cb(code, sig)
-    });
-};
+module.exports = constant;
