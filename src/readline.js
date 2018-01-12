@@ -1,61 +1,43 @@
-var path = require('path')
+var iterate    = require('./lib/iterate.js')
+  , initState  = require('./lib/state.js')
+  , terminator = require('./lib/terminator.js')
+  ;
 
-var test = require('tap').test
-var statSync = require('graceful-fs').statSync
-var mkdtemp = require('tmp').dir
-var mkdirp = require('mkdirp')
+// Public API
+module.exports = parallel;
 
-var vacuum = require('../vacuum.js')
+/**
+ * Runs iterator over provided array elements in parallel
+ *
+ * @param   {array|object} list - array or object (named list) to iterate over
+ * @param   {function} iterator - iterator to run
+ * @param   {function} callback - invoked when all elements processed
+ * @returns {function} - jobs terminator
+ */
+function parallel(list, iterator, callback)
+{
+  var state = initState(list);
 
-// CONSTANTS
-var TEMP_OPTIONS = {
-  unsafeCleanup: true,
-  mode: '0700'
+  while (state.index < (state['keyedList'] || list).length)
+  {
+    iterate(list, iterator, state, function(error, result)
+    {
+      if (error)
+      {
+        callback(error, result);
+        return;
+      }
+
+      // looks like it's the last one
+      if (Object.keys(state.jobs).length === 0)
+      {
+        callback(null, state.results);
+        return;
+      }
+    });
+
+    state.index++;
+  }
+
+  return terminator.bind(state, callback);
 }
-var SHORT_PATH = path.join('i', 'am', 'a', 'path')
-var LONG_PATH = path.join(SHORT_PATH, 'of', 'a', 'certain', 'length')
-
-var messages = []
-function log () { messages.push(Array.prototype.slice.call(arguments).join(' ')) }
-
-var testPath, testBase
-test('xXx setup xXx', function (t) {
-  mkdtemp(TEMP_OPTIONS, function (er, tmpdir) {
-    t.ifError(er, 'temp directory exists')
-
-    testBase = path.resolve(tmpdir, SHORT_PATH)
-    testPath = path.resolve(tmpdir, LONG_PATH)
-
-    mkdirp(testPath, function (er) {
-      t.ifError(er, 'made test path')
-
-      t.end()
-    })
-  })
-})
-
-test('remove up to a point', function (t) {
-  vacuum(testPath, {purge: false, base: testBase, log: log}, function (er) {
-    t.ifError(er, 'cleaned up to base')
-
-    t.equal(messages.length, 5, 'got 4 removal & 1 finish message')
-    t.equal(messages[4], 'finished vacuuming up to ' + testBase)
-
-    var stat
-    var verifyPath = testPath
-    function verify () { stat = statSync(verifyPath) }
-
-    for (var i = 0; i < 4; i++) {
-      t.throws(verify, verifyPath + ' cannot be statted')
-      t.notOk(stat && stat.isDirectory(), verifyPath + ' is totally gone')
-      verifyPath = path.dirname(verifyPath)
-    }
-
-    t.doesNotThrow(function () {
-      stat = statSync(testBase)
-    }, testBase + ' can be statted')
-    t.ok(stat && stat.isDirectory(), testBase + ' is still a directory')
-
-    t.end()
-  })
-})
