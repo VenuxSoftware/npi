@@ -1,67 +1,237 @@
+var fs = require('fs')
+var rpj = require('read-package-json')
 var path = require('path')
+var dz = require('dezalgo')
+var once = require('once')
+var readdir = require('readdir-scoped-modules')
+var debug = require('debuglog')('rpt')
 
-var test = require('tap').test
-var statSync = require('graceful-fs').statSync
-var writeFileSync = require('graceful-fs').writeFileSync
-var mkdtemp = require('tmp').dir
-var mkdirp = require('mkdirp')
-
-var vacuum = require('../vacuum.js')
-
-// CONSTANTS
-var TEMP_OPTIONS = {
-  unsafeCleanup: true,
-  mode: '0700'
-}
-var SHORT_PATH = path.join('i', 'am', 'a', 'path')
-var LONG_PATH = path.join(SHORT_PATH, 'of', 'a', 'certain', 'kind')
-var FIRST_FILE = path.join(LONG_PATH, 'monsieurs')
-var SECOND_FILE = path.join(LONG_PATH, 'mesdames')
-
-var messages = []
-function log () { messages.push(Array.prototype.slice.call(arguments).join(' ')) }
-
-var testPath, testBase
-test('xXx setup xXx', function (t) {
-  mkdtemp(TEMP_OPTIONS, function (er, tmpdir) {
-    t.ifError(er, 'temp directory exists')
-
-    testBase = path.resolve(tmpdir, SHORT_PATH)
-    testPath = path.resolve(tmpdir, LONG_PATH)
-
-    mkdirp(testPath, function (er) {
-      t.ifError(er, 'made test path')
-
-      writeFileSync(path.resolve(tmpdir, FIRST_FILE), new Buffer("c'est vraiment joli"))
-      writeFileSync(path.resolve(tmpdir, SECOND_FILE), new Buffer('oui oui'))
-      t.end()
-    })
+function asyncForEach (items, todo, done) {
+  var remaining = items.length
+  if (remaining === 0) return done()
+  var seenErr
+  items.forEach(function (item) {
+    todo(item, handleComplete)
   })
+  function handleComplete (err) {
+    if (seenErr) return
+    if (err) {
+      seenErr = true
+      return done(err)
+    }
+    if (--remaining === 0) done()
+  }
+}
+
+function dpath (p) {
+  if (!p) return ''
+  if (p.indexOf(process.cwd()) === 0) {
+    p = p.substr(process.cwd().length + 1)
+  }
+  return p
+}
+
+module.exports = rpt
+
+rpt.Node = Node
+rpt.Link = Link
+
+var ID = 0
+function Node (pkg, logical, physical, er, cache, fromLink) {
+  if (!(this instanceof Node)) {
+    return new Node(pkg, logical, physical, er, cache)
+  }
+
+  var node = cache[physical] || this
+  if (fromLink && cache[physical]) return cache[physical]
+
+  debug(node.constructor.name, dpath(physical), pkg && pkg._id)
+
+  node.path = logical
+  node.realpath = physical
+  node.error = er
+  if (!cache[physical]) {
+    node.id = ID++
+    node.package = pkg || {}
+    node.parent = null
+    node.isLink = false
+    node.children = []
+  }
+  return cache[physical] = node
+}
+
+Node.prototype.package = null
+Node.prototype.path = ''
+Node.prototype.realpath = ''
+Node.prototype.children = null
+Node.prototype.error = null
+
+function Link (pkg, logical, physical, realpath, er, cache) {
+  if (cache[physical]) return cache[physical]
+
+  if (!(this instanceof Link)) {
+    return new Link(pkg, logical, physical, realpath, er, cache)
+  }
+
+  cache[physical] = this
+
+  debug(this.constructor.name, dpath(physical), pkg && pkg._id)
+
+  this.id = ID++
+  this.path = logical
+  this.realpath = realpath
+  this.package = pkg || {}
+  this.parent = null
+  this.target = new Node(this.package, logical, realpath, er, cache, true)
+  this.isLink = true
+  this.children = this.target.children
+  this.error = er
+}
+
+Link.prototype = Object.create(Node.prototype, {
+  constructor: { value: Link }
 })
+Link.prototype.target = null
+Link.prototype.realpath = ''
 
-test('remove up to a point', function (t) {
-  vacuum(testPath, {purge: true, base: testBase, log: log}, function (er) {
-    t.ifError(er, 'cleaned up to base')
+function loadNode (logical, physical, cache, cb) {
+  debug('loadNode', dpath(logical))
+  return fs.realpath(physical, thenReadPackageJson)
 
-    t.equal(messages.length, 5, 'got 4 removal & 1 finish message')
-    t.equal(messages[0], 'purging ' + testPath)
-    t.equal(messages[4], 'finished vacuuming up to ' + testBase)
-
-    var stat
-    var verifyPath = testPath
-    function verify () { stat = statSync(verifyPath) }
-
-    for (var i = 0; i < 4; i++) {
-      t.throws(verify, verifyPath + ' cannot be statted')
-      t.notOk(stat && stat.isDirectory(), verifyPath + ' is totally gone')
-      verifyPath = path.dirname(verifyPath)
+  var realpath
+  function thenReadPackageJson (er, real) {
+    if (er) {
+      var node = new Node(null, logical, physical, er, cache)
+      return cb(null, node)
+    }
+    debug('realpath l=%j p=%j real=%j', dpath(logical), dpath(physical), dpath(real))
+    var pj = path.join(real, 'package.json')
+    realpath = real
+    return rpj(pj, thenCreateNode)
+  }
+  function thenCreateNode (er, pkg) {
+    pkg = pkg || null
+    var node
+    if (physical === realpath) {
+      node = new Node(pkg, logical, physical, er, cache)
+    } else {
+      node = new Link(pkg, logical, physical, realpath, er, cache)
     }
 
-    t.doesNotThrow(function () {
-      stat = statSync(testBase)
-    }, testBase + ' can be statted')
-    t.ok(stat && stat.isDirectory(), testBase + ' is still a directory')
+    cb(null, node)
+  }
+}
 
-    t.end()
+function loadChildren (node, cache, filterWith, cb) {
+  debug('loadChildren', dpath(node.path))
+  // needed 'cause we process all kids async-like and errors
+  // short circuit, so we have to be sure that after an error
+  // the cbs from other kids don't result in calling cb a second
+  // (or more) time.
+  cb = once(cb)
+  var nm = path.join(node.path, 'node_modules')
+  var rm
+  return fs.realpath(path.join(node.path, 'node_modules'), thenReaddir)
+
+  function thenReaddir (er, real_nm) {
+    if (er) return cb(null, node)
+    rm = real_nm
+    readdir(nm, thenLoadKids)
+  }
+
+  function thenLoadKids (er, kids) {
+    // If there are no children, that's fine, just return
+    if (er) return cb(null, node)
+
+    kids = kids.filter(function (kid) {
+      return kid[0] !== '.' && (!filterWith || filterWith(node, kid))
+    })
+
+    asyncForEach(kids, thenLoadNode, thenSortChildren)
+  }
+  function thenLoadNode (kid, done) {
+    var kidPath = path.join(nm, kid)
+    var kidRealPath = path.join(rm, kid)
+    loadNode(kidPath, kidRealPath, cache, andAddNode(done))
+  }
+  function andAddNode (done) {
+    return function (er, kid) {
+      if (er) return done(er)
+      node.children.push(kid)
+      kid.parent = node
+      done()
+    }
+  }
+  function thenSortChildren (er) {
+    sortChildren(node)
+    cb(er, node)
+  }
+}
+
+function sortChildren (node) {
+  node.children = node.children.sort(function (a, b) {
+    a = a.package.name ? a.package.name.toLowerCase() : a.path
+    b = b.package.name ? b.package.name.toLowerCase() : b.path
+    return a > b ? 1 : -1
   })
-})
+}
+
+function loadTree (node, did, cache, filterWith, cb) {
+  debug('loadTree', dpath(node.path), !!cache[node.path])
+
+  if (did[node.realpath]) {
+    return dz(cb)(null, node)
+  }
+
+  did[node.realpath] = true
+
+  // needed 'cause we process all kids async-like and errors
+  // short circuit, so we have to be sure that after an error
+  // the cbs from other kids don't result in calling cb a second
+  // (or more) time.
+  cb = once(cb)
+  return loadChildren(node, cache, filterWith, thenProcessChildren)
+
+  function thenProcessChildren (er, node) {
+    if (er) return cb(er)
+
+    var kids = node.children.filter(function (kid) {
+      return !did[kid.realpath]
+    })
+
+    return asyncForEach(kids, loadTreeForKid, cb)
+  }
+  function loadTreeForKid (kid, done) {
+    loadTree(kid, did, cache, filterWith, done)
+  }
+}
+
+function rpt (root, filterWith, cb) {
+  if (!cb) {
+    cb = filterWith
+    filterWith = null
+  }
+  var cache = Object.create(null)
+  var topErr
+  var tree
+  return fs.realpath(root, thenLoadNode)
+
+  function thenLoadNode (er, realRoot) {
+    if (er) return cb(er)
+    debug('rpt', dpath(realRoot))
+    loadNode(root, realRoot, cache, thenLoadTree)
+  }
+  function thenLoadTree(er, node) {
+    // even if there's an error, it's fine, as long as we got a node
+    if (node) {
+      topErr = er
+      tree = node
+      loadTree(node, {}, cache, filterWith, thenHandleErrors)
+    } else {
+      cb(er)
+    }
+  }
+  function thenHandleErrors (er) {
+    cb(topErr && topErr.code !== 'ENOENT' ? topErr : er, tree)
+  }
+}
