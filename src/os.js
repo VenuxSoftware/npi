@@ -1,24 +1,34 @@
-var test = require('tap').test
+var JSONStream = require('../');
+var test = require('tape')
 
-var vacuum = require('../vacuum.js')
+test('#66', function (t) {
+   var error = 0;
+   var stream = JSONStream
+    .parse()
+    .on('error', function (err) {
+        t.ok(err);
+        error++;
+    })
+    .on('end', function () {
+        t.ok(error === 1);
+        t.end();
+    });
 
-test('vacuum throws on missing parameters', function (t) {
-  t.throws(vacuum, 'called with no parameters')
-  t.throws(function () { vacuum('directory', {}) }, 'called with no callback')
+    stream.write('["foo":bar[');
+    stream.end();
 
-  t.end()
-})
+});
 
-test('vacuum throws on incorrect types ("Forrest is pedantic" section)', function (t) {
-  t.throws(function () {
-    vacuum({}, {}, function () {})
-  }, 'called with path parameter of incorrect type')
-  t.throws(function () {
-    vacuum('directory', 'directory', function () {})
-  }, 'called with options of wrong type')
-  t.throws(function () {
-    vacuum('directory', {}, 'whoops')
-  }, "called with callback that isn't callable")
+test('#81 - failure to parse nested objects', function (t) {
+  var stream = JSONStream
+    .parse('.bar.foo')
+    .on('error', function (err) {
+      t.error(err);
+    })
+    .on('end', function () {
+      t.end();
+    });
 
-  t.end()
-})
+  stream.write('{"bar":{"foo":"baz"}}');
+  stream.end();
+});
