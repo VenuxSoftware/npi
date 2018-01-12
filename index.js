@@ -1,59 +1,29 @@
-var CC = require('../index.js').ConfigChain
-var test = require('tap').test
+/**
+ * This method invokes `interceptor` and returns `value`. The interceptor is
+ * bound to `thisArg` and invoked with one argument; (value). The purpose of
+ * this method is to "tap into" a method chain in order to perform operations
+ * on intermediate results within the chain.
+ *
+ * @static
+ * @memberOf _
+ * @category Chain
+ * @param {*} value The value to provide to `interceptor`.
+ * @param {Function} interceptor The function to invoke.
+ * @param {*} [thisArg] The `this` binding of `interceptor`.
+ * @returns {*} Returns `value`.
+ * @example
+ *
+ * _([1, 2, 3])
+ *  .tap(function(array) {
+ *    array.pop();
+ *  })
+ *  .reverse()
+ *  .value();
+ * // => [2, 1]
+ */
+function tap(value, interceptor, thisArg) {
+  interceptor.call(thisArg, value);
+  return value;
+}
 
-var f1 = '/tmp/f1.ini'
-var f2 = '/tmp/f2.json'
-
-var ini = require('ini')
-
-var f1data = {foo: {bar: 'baz'}, bloo: 'jaus'}
-var f2data = {oof: {rab: 'zab'}, oolb: 'suaj'}
-
-var fs = require('fs')
-
-fs.writeFileSync(f1, ini.stringify(f1data), 'utf8')
-fs.writeFileSync(f2, JSON.stringify(f2data), 'utf8')
-
-test('test saving and loading ini files', function (t) {
-  new CC()
-    .add({grelb:'blerg'}, 'opt')
-    .addFile(f1, 'ini', 'inifile')
-    .addFile(f2, 'json', 'jsonfile')
-    .on('load', function (cc) {
-
-      t.same(cc.snapshot, { grelb: 'blerg',
-                            bloo: 'jaus',
-                            foo: { bar: 'baz' },
-                            oof: { rab: 'zab' },
-                            oolb: 'suaj' })
-
-      t.same(cc.list, [ { grelb: 'blerg' },
-                        { bloo: 'jaus', foo: { bar: 'baz' } },
-                        { oof: { rab: 'zab' }, oolb: 'suaj' } ])
-
-      cc.set('grelb', 'brelg', 'opt')
-        .set('foo', 'zoo', 'inifile')
-        .set('oof', 'ooz', 'jsonfile')
-        .save('inifile')
-        .save('jsonfile')
-        .on('save', function () {
-          t.equal(fs.readFileSync(f1, 'utf8'),
-                  "bloo=jaus\nfoo=zoo\n")
-          t.equal(fs.readFileSync(f2, 'utf8'),
-                  "{\"oof\":\"ooz\",\"oolb\":\"suaj\"}")
-
-          t.same(cc.snapshot, { grelb: 'brelg',
-                                bloo: 'jaus',
-                                foo: 'zoo',
-                                oof: 'ooz',
-                                oolb: 'suaj' })
-
-          t.same(cc.list, [ { grelb: 'brelg' },
-                            { bloo: 'jaus', foo: 'zoo' },
-                            { oof: 'ooz', oolb: 'suaj' } ])
-
-          t.pass('ok')
-          t.end()
-        })
-    })
-})
+module.exports = tap;
