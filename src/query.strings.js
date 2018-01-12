@@ -1,78 +1,128 @@
-var path = require('path')
+var resolve = require('path').resolve
+var writeFileSync = require('graceful-fs').writeFileSync
 
-var test = require('tap').test
-var statSync = require('graceful-fs').statSync
-var symlinkSync = require('graceful-fs').symlinkSync
-var readdirSync = require('graceful-fs').readdirSync
-var mkdtemp = require('tmp').dir
+var fs = require('fs')
 var mkdirp = require('mkdirp')
+var http = require('http')
+var osenv = require('osenv')
+var rimraf = require('rimraf')
+var test = require('tap').test
 
-var vacuum = require('../vacuum.js')
+var common = require('../common-tap.js')
+var toNerfDart = require('../../lib/config/nerf-dart.js')
 
-// CONSTANTS
-var TEMP_OPTIONS = {
-  unsafeCleanup: true,
-  mode: '0700'
-}
-var SHORT_PATH = path.join('i', 'am', 'a', 'path')
-var TARGET_PATH = path.join('target-link', 'in', 'the', 'middle')
-var PARTIAL_PATH = path.join(SHORT_PATH, 'with', 'a')
-var FULL_PATH = path.join(PARTIAL_PATH, 'link')
-var EXPANDO_PATH = path.join(SHORT_PATH, 'with', 'a', 'link', 'in', 'the', 'middle')
+var pkg = resolve(__dirname, 'install-bearer-check')
+var outfile = resolve(pkg, '_npmrc')
+var modules = resolve(pkg, 'node_modules')
+var tarballPath = '/scoped-underscore/-/scoped-underscore-1.3.1.tgz'
+// needs to be a different hostname to verify tokens (not) being sent correctly
+var tarballURL = 'http://127.0.0.1:' + common.port + tarballPath
+var tarball = resolve(__dirname, '../fixtures/scoped-underscore-1.3.1.tgz')
 
-var messages = []
-function log () { messages.push(Array.prototype.slice.call(arguments).join(' ')) }
+var EXEC_OPTS = { cwd: pkg, stdio: [0, 'pipe', 2] }
 
-var testBase, targetPath, partialPath, fullPath, expandoPath
-test('xXx setup xXx', function (t) {
-  mkdtemp(TEMP_OPTIONS, function (er, tmpdir) {
-    t.ifError(er, 'temp directory exists')
+var auth = 'Bearer 0xabad1dea'
+var server = http.createServer()
+server.on('request', (req, res) => {
+  if (req.method === 'GET' && req.url === tarballPath) {
+    if (req.headers.authorization === auth) {
+      res.writeHead(403, 'this token should not be sent')
+      res.end()
+    } else {
+      res.writeHead(200, 'ok')
+      res.end(fs.readFileSync(tarball))
+    }
+  } else {
+    res.writeHead(500)
+    res.end()
+  }
+})
 
-    testBase = path.resolve(tmpdir, SHORT_PATH)
-    targetPath = path.resolve(tmpdir, TARGET_PATH)
-    partialPath = path.resolve(tmpdir, PARTIAL_PATH)
-    fullPath = path.resolve(tmpdir, FULL_PATH)
-    expandoPath = path.resolve(tmpdir, EXPANDO_PATH)
-
-    mkdirp(partialPath, function (er) {
-      t.ifError(er, 'made test path')
-
-      mkdirp(targetPath, function (er) {
-        t.ifError(er, 'made target path')
-
-        symlinkSync(path.join(tmpdir, 'target-link'), fullPath)
-
-        t.end()
-      })
-    })
+test('setup', function (t) {
+  server.listen(common.port, () => {
+    setup()
+    t.done()
   })
 })
 
-test('remove up to a point', function (t) {
-  vacuum(expandoPath, {purge: false, base: testBase, log: log}, function (er) {
-    t.ifError(er, 'cleaned up to base')
+test('authed npm install with tarball not on registry', function (t) {
+  common.npm(
+    [
+      'install',
+      '--json',
+      '--fetch-retries', 0,
+      '--registry', common.registry,
+      '--userconfig', outfile
+    ],
+    EXEC_OPTS,
+    function (err, code, stdout, stderr) {
+      if (err) throw err
+      t.equal(code, 0, 'npm install exited OK')
+      t.comment(stdout.trim())
+      t.comment(stderr.trim())
+      t.notOk(stderr, 'no output on stderr')
+      try {
+        var results = JSON.parse(stdout)
+      } catch (ex) {
+        t.ifError(ex, 'stdout was valid JSON')
+      }
 
-    t.equal(messages.length, 7, 'got 6 removal & 1 finish message')
-    t.equal(messages[6], 'finished vacuuming up to ' + testBase)
+      if (results) {
+        var installedversion = [
+          {
+            'name': '@scoped/underscore',
+            'version': '1.3.1'
+          }
+        ]
+        t.match(results.added, installedversion, '@scoped/underscore installed')
+      }
 
-    var stat
-    var verifyPath = expandoPath
-    function verify () { stat = statSync(verifyPath) }
-
-    for (var i = 0; i < 6; i++) {
-      t.throws(verify, verifyPath + ' cannot be statted')
-      t.notOk(stat && stat.isDirectory(), verifyPath + ' is totally gone')
-      verifyPath = path.dirname(verifyPath)
+      t.end()
     }
+  )
+})
 
-    t.doesNotThrow(function () {
-      stat = statSync(testBase)
-    }, testBase + ' can be statted')
-    t.ok(stat && stat.isDirectory(), testBase + ' is still a directory')
-
-    var files = readdirSync(testBase)
-    t.equal(files.length, 0, 'nothing left in base directory')
-
+test('cleanup', function (t) {
+  server.close(() => {
+    cleanup()
     t.end()
   })
 })
+
+var contents = '@scoped:registry=' + common.registry + '\n' +
+               toNerfDart(common.registry) + ':_authToken=0xabad1dea\n'
+
+var json = {
+  name: 'test-package-install',
+  version: '1.0.0',
+  dependencies: {
+    '@scoped/underscore': '1.3.1'
+  }
+}
+
+var shrinkwrap = {
+  name: 'test-package-install',
+  version: '1.0.0',
+  dependencies: {
+    '@scoped/underscore': {
+      resolved: tarballURL,
+      version: '1.3.1'
+    }
+  }
+}
+
+function setup () {
+  cleanup()
+  mkdirp.sync(modules)
+  writeFileSync(resolve(pkg, 'package.json'), JSON.stringify(json, null, 2) + '\n')
+  writeFileSync(outfile, contents)
+  writeFileSync(
+    resolve(pkg, 'npm-shrinkwrap.json'),
+    JSON.stringify(shrinkwrap, null, 2) + '\n'
+  )
+}
+
+function cleanup () {
+  process.chdir(osenv.tmpdir())
+  rimraf.sync(pkg)
+}
