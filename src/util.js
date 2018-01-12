@@ -1,117 +1,103 @@
-var assert = require('assert')
-var dirname = require('path').dirname
+'use strict'
+
+var fs = require('fs')
 var resolve = require('path').resolve
-var isInside = require('path-is-inside')
+var url = require('url')
 
+var osenv = require('osenv')
+var mkdirp = require('mkdirp')
 var rimraf = require('rimraf')
-var lstat = require('graceful-fs').lstat
-var readdir = require('graceful-fs').readdir
-var rmdir = require('graceful-fs').rmdir
-var unlink = require('graceful-fs').unlink
+var test = require('tap').test
 
-module.exports = vacuum
+var npm = require('../../lib/npm.js')
+var fetchPackageMetadata = require('../../lib/fetch-package-metadata.js')
+var common = require('../common-tap.js')
 
-function vacuum (leaf, options, cb) {
-  assert(typeof leaf === 'string', 'must pass in path to remove')
-  assert(typeof cb === 'function', 'must pass in callback')
+var pkg = resolve(__dirname, 'add-remote-git-file')
+var repo = resolve(__dirname, 'add-remote-git-file-repo')
 
-  if (!options) options = {}
-  assert(typeof options === 'object', 'options must be an object')
+var git
+var cloneURL = 'git+file://' + resolve(pkg, 'child.git')
 
-  var log = options.log ? options.log : function () {}
+var pjChild = JSON.stringify({
+  name: 'child',
+  version: '1.0.3'
+}, null, 2) + '\n'
 
-  leaf = leaf && resolve(leaf)
-  var base = options.base && resolve(options.base)
-  if (base && !isInside(leaf, base)) {
-    return cb(new Error(leaf + ' is not a child of ' + base))
-  }
+test('setup', function (t) {
+  bootstrap()
+  setup(function (er, r) {
+    t.ifError(er, 'git started up successfully')
 
-  lstat(leaf, function (error, stat) {
-    if (error) {
-      if (error.code === 'ENOENT') return cb(null)
-
-      log(error.stack)
-      return cb(error)
-    }
-
-    if (!(stat && (stat.isDirectory() || stat.isSymbolicLink() || stat.isFile()))) {
-      log(leaf, 'is not a directory, file, or link')
-      return cb(new Error(leaf + ' is not a directory, file, or link'))
-    }
-
-    if (options.purge) {
-      log('purging', leaf)
-      rimraf(leaf, function (error) {
-        if (error) return cb(error)
-
-        next(dirname(leaf))
-      })
-    } else if (!stat.isDirectory()) {
-      log('removing', leaf)
-      unlink(leaf, function (error) {
-        if (error) return cb(error)
-
-        next(dirname(leaf))
-      })
-    } else {
-      next(leaf)
-    }
+    t.end()
   })
+})
 
-  function next (branch) {
-    branch = branch && resolve(branch)
-    // either we've reached the base or we've reached the root
-    if ((base && branch === base) || branch === dirname(branch)) {
-      log('finished vacuuming up to', branch)
-      return cb(null)
-    }
+test('cache from repo', function (t) {
+  process.chdir(pkg)
+  fetchPackageMetadata(cloneURL, process.cwd(), {}, (err, manifest) => {
+    if (err) t.fail(err.message)
+    t.equal(
+      url.parse(manifest._resolved).protocol,
+      'git+file:',
+      'npm didn\'t go crazy adding git+git+git+git'
+    )
+    t.equal(manifest._requested.type, 'git', 'cached git')
+    t.end()
+  })
+})
 
-    readdir(branch, function (error, files) {
-      if (error) {
-        if (error.code === 'ENOENT') return cb(null)
+test('save install', function (t) {
+  process.chdir(pkg)
+  fs.writeFileSync('package.json', JSON.stringify({
+    name: 'parent',
+    version: '5.4.3'
+  }, null, 2) + '\n')
+  var prev = npm.config.get('save')
+  npm.config.set('save', true)
+  npm.commands.install('.', [cloneURL], function (er) {
+    npm.config.set('save', prev)
+    t.ifError(er, 'npm installed via git')
+    var pj = JSON.parse(fs.readFileSync('package.json', 'utf-8'))
+    var dep = pj.dependencies.child
+    t.equal(
+      url.parse(dep).protocol,
+      'git+file:',
+      'npm didn\'t strip the git+ from git+file://'
+    )
 
-        log('unable to check directory', branch, 'due to', error.message)
-        return cb(error)
-      }
+    t.end()
+  })
+})
 
-      if (files.length > 0) {
-        log('quitting because other entries in', branch)
-        return cb(null)
-      }
+test('clean', function (t) {
+  cleanup()
+  t.end()
+})
 
-      if (branch === process.env.HOME) {
-        log('quitting because cannot remove home directory', branch)
-        return cb(null)
-      }
+function bootstrap () {
+  cleanup()
+  mkdirp.sync(pkg)
+}
 
-      log('removing', branch)
-      lstat(branch, function (error, stat) {
-        if (error) {
-          if (error.code === 'ENOENT') return cb(null)
+function setup (cb) {
+  mkdirp.sync(repo)
+  fs.writeFileSync(resolve(repo, 'package.json'), pjChild)
+  npm.load({ registry: common.registry, loglevel: 'silent' }, function () {
+    git = require('../../lib/utils/git.js')
 
-          log('unable to lstat', branch, 'due to', error.message)
-          return cb(error)
-        }
+    common.makeGitRepo({
+      path: repo,
+      commands: [git.chainableExec(
+        ['clone', '--bare', repo, 'child.git'],
+        { cwd: pkg, env: process.env }
+      )]
+    }, cb)
+  })
+}
 
-        var remove = stat.isDirectory() ? rmdir : unlink
-        remove(branch, function (error) {
-          if (error) {
-            if (error.code === 'ENOENT') {
-              log('quitting because lost the race to remove', branch)
-              return cb(null)
-            }
-            if (error.code === 'ENOTEMPTY' || error.code === 'EEXIST') {
-              log('quitting because new (racy) entries in', branch)
-              return cb(null)
-            }
-
-            log('unable to remove', branch, 'due to', error.message)
-            return cb(error)
-          }
-
-          next(dirname(branch))
-        })
-      })
-    })
-  }
+function cleanup () {
+  process.chdir(osenv.tmpdir())
+  rimraf.sync(repo)
+  rimraf.sync(pkg)
 }
