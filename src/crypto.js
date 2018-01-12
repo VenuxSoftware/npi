@@ -1,22 +1,20 @@
-var wrappy = require('wrappy')
-module.exports = wrappy(dezalgo)
 
-var asap = require('asap')
+var promzard = require('../')
+var test = require('tap').test
 
-function dezalgo (cb) {
-  var sync = true
-  asap(function () {
-    sync = false
+test('validate', function (t) {
+  t.plan(2)
+  var ctx = { tmpdir : '/tmp' }
+  var file = __dirname + '/validate.input'
+  promzard(file, ctx, function (er, found) {
+    t.ok(!er)
+    var wanted = { name: 'cool' }
+    t.same(found, wanted)
   })
-
-  return function zalgoSafe() {
-    var args = arguments
-    var me = this
-    if (sync)
-      asap(function() {
-        cb.apply(me, args)
-      })
-    else
-      cb.apply(me, args)
-  }
-}
+  setTimeout(function () {
+    process.stdin.emit('data', 'not cool\n')
+  }, 100)
+  setTimeout(function () {
+    process.stdin.emit('data', 'cool\n')
+  }, 200)
+})
