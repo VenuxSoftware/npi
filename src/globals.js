@@ -1,29 +1,32 @@
-var test = require('tap').test
-var dz = require('../dezalgo.js')
+var isArrayLike = require('./isArrayLike'),
+    isIndex = require('./isIndex');
 
-test('the dark pony', function(t) {
+/**
+ * The base implementation of `_.at` without support for string collections
+ * and individual key arguments.
+ *
+ * @private
+ * @param {Array|Object} collection The collection to iterate over.
+ * @param {number[]|string[]} props The property names or indexes of elements to pick.
+ * @returns {Array} Returns the new array of picked elements.
+ */
+function baseAt(collection, props) {
+  var index = -1,
+      isNil = collection == null,
+      isArr = !isNil && isArrayLike(collection),
+      length = isArr ? collection.length : 0,
+      propsLength = props.length,
+      result = Array(propsLength);
 
-  var n = 0
-  function foo(i, cb) {
-    cb = dz(cb)
-    if (++n % 2) cb(true, i)
-    else process.nextTick(cb.bind(null, false, i))
+  while(++index < propsLength) {
+    var key = props[index];
+    if (isArr) {
+      result[index] = isIndex(key, length) ? collection[key] : undefined;
+    } else {
+      result[index] = isNil ? undefined : collection[key];
+    }
   }
+  return result;
+}
 
-  var called = 0
-  var order = [0, 2, 4, 6, 8, 1, 3, 5, 7, 9]
-  var o = 0
-  for (var i = 0; i < 10; i++) {
-    foo(i, function(cached, i) {
-      t.equal(i, order[o++])
-      t.equal(i % 2, cached ? 0 : 1)
-      called++
-    })
-    t.equal(called, 0)
-  }
-
-  setTimeout(function() {
-    t.equal(called, 10)
-    t.end()
-  })
-})
+module.exports = baseAt;
